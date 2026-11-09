@@ -23,7 +23,7 @@
   main { max-width: 900px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 12px; }
   h2 { font-size: 1rem; margin: 0; }
-  select, input[type=password], button {
+  select, input[type=password], input[type=number], button {
     font: inherit; padding: 6px 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--card); color: var(--fg);
   }
@@ -54,6 +54,9 @@
   .legend span.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   #dayDetail { margin-top: 10px; font-size: 0.85rem; color: var(--muted); white-space: pre-line; min-height: 2.4em; }
   .chart-wrap { position: relative; height: 280px; }
+  .goal-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .goal-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+  .goal-form input[type=number] { width: 150px; }
 </style>
 </head>
 <body>
@@ -85,6 +88,21 @@
   </div>
 
   <div class="card">
+    <div class="card-head"><h2>My goals</h2></div>
+    <div class="goal-form">
+      <label>Exercise minutes per day
+        <input type="number" id="goalMinutes" min="1" max="1440" step="1">
+      </label>
+      <label>Active calories per day
+        <input type="number" id="goalCalories" min="1" max="20000" step="1">
+      </label>
+      <button class="primary" id="saveGoals">Save</button>
+    </div>
+    <div class="muted" style="margin-top:8px">A day counts as a workout day when you hit both.</div>
+    <div class="status" id="goalStatus" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
     <div class="card-head">
       <h2>Trends</h2>
       <div class="muted">
@@ -96,9 +114,10 @@
             <option value="90">90 days</option>
           </select>
         </label>
-        <label style="margin-left:10px"><input type="checkbox" id="avg" checked> 7-day average</label>
+        <label style="margin-left:10px"><input type="checkbox" id="showGoals" checked> Goal lines</label>
       </div>
     </div>
+    <div class="muted" style="margin-bottom:8px">Dots are daily values (filled = met your goal, hollow = below it). Bold line = 7-day average, dashed = goal. You are shown by default; tap a name to show or hide someone.</div>
     <div class="status" id="chartStatus"></div>
     <h2 style="margin:8px 0">Exercise minutes</h2>
     <div class="chart-wrap"><canvas id="minutesChart"></canvas></div>
@@ -114,7 +133,7 @@ const PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#ec4899', '#eab308', '#14b8a6
 const ALL_COLOR = '#10b981';
 const charts = {};
 let USERS = [];
-let cal = { days: {}, users: [] };
+let cal = { days: {}, users: [], goals: {} };
 const now = new Date();
 let viewY = now.getFullYear();
 let viewM = now.getMonth() + 1;
@@ -245,8 +264,11 @@ function renderCalendar() {
     item.appendChild(document.createTextNode('Everyone: ' + allCount));
     legend.appendChild(item);
   }
-  $('threshold').textContent =
-    'Workout day = at least ' + cal.min_minutes + ' exercise minutes and ' + cal.min_calories + ' active calories.';
+  const goalText = USERS.map((u) => {
+    const g = cal.goals[u];
+    return cap(u) + ': ' + g.min_minutes + ' min and ' + g.min_calories + ' cal';
+  });
+  $('threshold').textContent = 'Workout day goals (both required): ' + goalText.join('  |  ');
 }
 
 async function loadCalendar() {
@@ -288,38 +310,92 @@ function rollingAvg(values, window) {
   });
 }
 
-function buildChart(canvasId, field, rows, showAvg, goal, goalLabel) {
+// Which people are drawn on the charts. null = everyone (until we know who "me" is).
+let visiblePeople = null;
+function isShown(name) { return visiblePeople === null || visiblePeople.has(name); }
+
+function setPersonShown(name, show) {
+  if (visiblePeople === null) visiblePeople = new Set(USERS);
+  if (show) visiblePeople.add(name); else visiblePeople.delete(name);
+  // Apply to every chart so both stay in sync.
+  Object.values(charts).forEach((chart) => {
+    chart.data.datasets.forEach((d, i) => {
+      if (d._person === name) chart.setDatasetVisibility(i, show);
+    });
+    chart.update();
+  });
+}
+
+function goalLines(key, names) {
+  const people = names.filter((u) => cal.goals && cal.goals[u]);
+  if (!people.length) return [];
+  const values = people.map((u) => cal.goals[u][key]);
+  if (values.every((v) => v === values[0])) {
+    // Same goal for everyone: one shared neutral line.
+    return [{ label: 'Goal (' + values[0] + ')', value: values[0], color: cssVar('--muted'), person: null }];
+  }
+  return people.map((u) => ({
+    label: cap(u) + ' goal (' + cal.goals[u][key] + ')',
+    value: cal.goals[u][key],
+    color: colorOf(u),
+    person: u,
+  }));
+}
+
+function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
   const labels = dateRange(rows);
   const names = [...new Set(rows.map((r) => r.name))].sort();
   const datasets = [];
+  const lines = showGoalLines && labels.length ? goalLines(goalKey, names) : [];
+  const perPersonGoals = lines.length > 0 && lines[0].person !== null;
+  const hollow = cssVar('--card');
 
   names.forEach((name) => {
     const color = colorOf(name);
+    const goal = cal.goals && cal.goals[name] ? cal.goals[name][goalKey] : null;
     const byDate = {};
     rows.filter((r) => r.name === name).forEach((r) => { byDate[r.date] = r[field]; });
     const values = labels.map((d) => (d in byDate ? byDate[d] : null));
+    const hidden = !isShown(name);
 
+    // Daily values: dots only, no connecting line.
+    // Filled = at or above your goal, hollow = below it.
     datasets.push({
-      label: cap(name), data: values, borderColor: color, backgroundColor: color,
-      borderWidth: 2, pointRadius: 3, tension: 0.25, spanGaps: true,
+      label: cap(name) + ' (daily)',
+      _person: name, _kind: 'daily', _goal: goal, _hideLegend: true,
+      hidden, order: 2,
+      data: values,
+      showLine: false,
+      borderColor: color,
+      pointBorderColor: color,
+      pointBackgroundColor: values.map((v) => (v !== null && goal !== null && v >= goal ? color : hollow)),
+      pointBorderWidth: 2, pointRadius: 3.5, pointHoverRadius: 5,
     });
-    if (showAvg) {
-      datasets.push({
-        label: cap(name) + ' (7-day avg)', data: rollingAvg(values, 7),
-        borderColor: color, backgroundColor: color, borderWidth: 2,
-        borderDash: [6, 4], pointRadius: 0, tension: 0.35, spanGaps: true,
-      });
-    }
+
+    // The trend: bold solid 7-day average. This is the legend entry for the person.
+    datasets.push({
+      label: perPersonGoals && goal !== null ? cap(name) + ' (goal ' + goal + ')' : cap(name),
+      _person: name, _kind: 'avg',
+      hidden, order: 1,
+      data: rollingAvg(values, 7),
+      borderColor: color, backgroundColor: color,
+      borderWidth: 2.75, pointRadius: 0, pointHoverRadius: 0,
+      tension: 0.35, spanGaps: true,
+    });
   });
 
-  if (goal && labels.length) {
+  // Goal lines: thin, dashed, drawn underneath. Per-person lines follow that person's visibility.
+  lines.forEach((g) => {
     datasets.push({
-      label: goalLabel + ' (' + goal + ')',
-      data: labels.map(() => goal),
-      borderColor: cssVar('--muted'), backgroundColor: cssVar('--muted'),
-      borderWidth: 1.5, borderDash: [2, 4], pointRadius: 0, tension: 0, spanGaps: true,
+      label: g.label,
+      _person: g.person, _kind: 'goal', _hideLegend: g.person !== null,
+      hidden: g.person !== null && !isShown(g.person), order: 3,
+      data: labels.map(() => g.value),
+      borderColor: g.color, backgroundColor: g.color,
+      borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 0,
+      tension: 0, spanGaps: true,
     });
-  }
+  });
 
   if (charts[canvasId]) charts[canvasId].destroy();
   const tick = cssVar('--muted');
@@ -331,7 +407,44 @@ function buildChart(canvasId, field, rows, showAvg, goal, goalLabel) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: tick, usePointStyle: true } } },
+      plugins: {
+        legend: {
+          labels: {
+            color: tick,
+            usePointStyle: true,
+            pointStyle: 'line',
+            // One entry per person (their average line), plus the shared goal line if there is one.
+            filter: (item, data) => !data.datasets[item.datasetIndex]._hideLegend,
+          },
+          onClick: (e, item, legend) => {
+            const chart = legend.chart;
+            const d = chart.data.datasets[item.datasetIndex];
+            if (d._person === null) {
+              // The shared goal line toggles on its own.
+              chart.setDatasetVisibility(item.datasetIndex, !chart.isDatasetVisible(item.datasetIndex));
+              chart.update();
+              return;
+            }
+            // A person's name toggles their line, dots and goal line, on every chart.
+            setPersonShown(d._person, !isShown(d._person));
+          },
+        },
+        tooltip: {
+          filter: (item) =>
+            item.dataset._kind !== 'goal' && item.parsed.y !== null && item.parsed.y !== undefined,
+          callbacks: {
+            label: (ctx) => {
+              const d = ctx.dataset;
+              const v = ctx.parsed.y;
+              if (d._kind === 'daily') {
+                return cap(d._person) + ': ' + v + (d._goal !== null && v >= d._goal ? ' (goal met)' : '');
+              }
+              if (d._kind === 'avg') return cap(d._person) + ' 7-day avg: ' + v;
+              return d.label;
+            },
+          },
+        },
+      },
       scales: {
         x: { ticks: { color: tick, maxTicksLimit: 8 }, grid: { color: grid } },
         y: { beginAtZero: true, ticks: { color: tick }, grid: { color: grid } },
@@ -341,10 +454,10 @@ function buildChart(canvasId, field, rows, showAvg, goal, goalLabel) {
 }
 
 function renderCharts() {
-  const showAvg = $('avg').checked;
+  const showGoalLines = $('showGoals').checked;
   $('chartStatus').textContent = chartRows.length ? '' : 'No data in this range yet.';
-  buildChart('minutesChart', 'exercise_minutes', chartRows, showAvg, cal.min_minutes, 'Goal');
-  buildChart('caloriesChart', 'active_calories', chartRows, showAvg, cal.min_calories, 'Goal');
+  buildChart('minutesChart', 'exercise_minutes', 'min_minutes', chartRows, showGoalLines);
+  buildChart('caloriesChart', 'active_calories', 'min_calories', chartRows, showGoalLines);
 }
 
 async function loadCharts() {
@@ -355,6 +468,44 @@ async function loadCharts() {
     renderCharts();
   } catch (e) {
     $('chartStatus').textContent = 'Could not load chart data. Try again in a moment.';
+  }
+}
+
+/* ---------- My goals ---------- */
+
+async function loadMe() {
+  try {
+    const me = await apiGet('/api/me');
+    if (!me) return;
+    if (visiblePeople === null) visiblePeople = new Set([me.name]);
+    $('goalMinutes').value = me.min_minutes;
+    $('goalCalories').value = me.min_calories;
+  } catch (e) {
+    $('goalStatus').textContent = 'Could not load your goals.';
+  }
+}
+
+async function saveGoals() {
+  const mins = parseInt($('goalMinutes').value, 10);
+  const cals = parseInt($('goalCalories').value, 10);
+  if (!(mins >= 1 && mins <= 1440) || !(cals >= 1 && cals <= 20000)) {
+    $('goalStatus').textContent = 'Enter minutes (1 to 1440) and calories (1 to 20000).';
+    return;
+  }
+  $('goalStatus').textContent = 'Saving...';
+  try {
+    const res = await fetch('/api/me/settings', {
+      method: 'PATCH',
+      headers: { 'X-API-Key': getKey(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_minutes: mins, min_calories: cals }),
+    });
+    if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    $('goalStatus').textContent = 'Saved.';
+    await loadCalendar();
+    renderCharts();
+  } catch (e) {
+    $('goalStatus').textContent = 'Could not save. Try again in a moment.';
   }
 }
 
@@ -376,10 +527,14 @@ $('nextMonth').addEventListener('click', () => {
   loadCalendar();
 });
 $('range').addEventListener('change', loadCharts);
-$('avg').addEventListener('change', renderCharts);
+$('saveGoals').addEventListener('click', saveGoals);
+$('showGoals').addEventListener('change', renderCharts);
 
 async function init() {
-  if (await loadCalendar()) await loadCharts();
+  if (await loadCalendar()) {
+    await loadMe();
+    await loadCharts();
+  }
 }
 init();
 </script>

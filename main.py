@@ -20,9 +20,10 @@ engine = create_engine(raw_url, pool_pre_ping=True)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# A "workout day" needs BOTH thresholds met. Change via env vars, no code edit.
-MIN_MINUTES = int(os.getenv("MIN_WORKOUT_MINUTES", "30"))
-MIN_CALORIES = int(os.getenv("MIN_WORKOUT_CALORIES", "300"))
+# Default goals for anyone who hasn't set their own. A "workout day" needs BOTH
+# thresholds met. Override the defaults via env vars, no code edit.
+DEFAULT_MIN_MINUTES = int(os.getenv("MIN_WORKOUT_MINUTES", "30"))
+DEFAULT_MIN_CALORIES = int(os.getenv("MIN_WORKOUT_CALORIES", "400"))
 
 
 class Base(DeclarativeBase):
@@ -49,6 +50,16 @@ class ApiKey(Base):
     revoked_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class UserSettings(Base):
+    """Per-person goals. A row exists only once someone customizes them;
+    everyone else uses the defaults above."""
+
+    __tablename__ = "user_settings"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    min_minutes: Mapped[int] = mapped_column(Integer)
+    min_calories: Mapped[int] = mapped_column(Integer)
 
 
 class DailyActivity(Base):
@@ -78,6 +89,11 @@ class LogIn(BaseModel):
             return round(float(v))
         except (TypeError, ValueError):
             raise ValueError("must be a number")
+
+
+class SettingsIn(BaseModel):
+    min_minutes: int | None = Field(default=None, ge=1, le=1440)
+    min_calories: int | None = Field(default=None, ge=1, le=20000)
 
 
 app = FastAPI(title="Couples Workout Tracker")
@@ -126,6 +142,22 @@ def current_user(
     return user
 
 
+def effective_goals(db: Session) -> dict[str, dict]:
+    """Goals for every person: their own if set, otherwise the defaults."""
+    rows = db.execute(
+        select(User.name, UserSettings.min_minutes, UserSettings.min_calories)
+        .outerjoin(UserSettings, UserSettings.user_id == User.id)
+        .order_by(User.name)
+    ).all()
+    return {
+        r.name: {
+            "min_minutes": r.min_minutes if r.min_minutes is not None else DEFAULT_MIN_MINUTES,
+            "min_calories": r.min_calories if r.min_calories is not None else DEFAULT_MIN_CALORIES,
+        }
+        for r in rows
+    }
+
+
 @app.get("/")
 def dashboard():
     # The page itself contains no secrets; it asks for your key and sends it
@@ -166,6 +198,37 @@ def log(
     db.execute(stmt)
     db.commit()
     return {"status": "ok", "name": user.name, "date": body.date}
+
+
+@app.get("/api/me")
+def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
+    return {"name": user.name, **effective_goals(db)[user.name]}
+
+
+@app.patch("/api/me/settings")
+def update_my_settings(
+    body: SettingsIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    settings = db.get(UserSettings, user.id)
+    if settings is None:
+        settings = UserSettings(
+            user_id=user.id,
+            min_minutes=DEFAULT_MIN_MINUTES,
+            min_calories=DEFAULT_MIN_CALORIES,
+        )
+        db.add(settings)
+    if body.min_minutes is not None:
+        settings.min_minutes = body.min_minutes
+    if body.min_calories is not None:
+        settings.min_calories = body.min_calories
+    db.commit()
+    return {
+        "name": user.name,
+        "min_minutes": settings.min_minutes,
+        "min_calories": settings.min_calories,
+    }
 
 
 @app.get("/api/activity", dependencies=[Depends(current_user)])
@@ -216,19 +279,20 @@ def calendar_month(
         .where(DailyActivity.date >= start, DailyActivity.date < end)
     ).all()
 
+    goals = effective_goals(db)
     days: dict[str, dict] = {}
     for r in rows:
+        g = goals[r.name]
         days.setdefault(r.date.isoformat(), {})[r.name] = {
             "exercise_minutes": r.exercise_minutes,
             "active_calories": r.active_calories,
-            "workout": r.exercise_minutes >= MIN_MINUTES
-            and r.active_calories >= MIN_CALORIES,
+            "workout": r.exercise_minutes >= g["min_minutes"]
+            and r.active_calories >= g["min_calories"],
         }
 
     return {
         "month": month,
         "users": users,
-        "min_minutes": MIN_MINUTES,
-        "min_calories": MIN_CALORIES,
+        "goals": goals,
         "days": days,
     }

@@ -20,7 +20,7 @@ if _norm(TEST_URL) == _norm(os.environ.get("DATABASE_URL")):
 # Must be set BEFORE main is imported (it reads these at import time).
 os.environ["DATABASE_URL"] = TEST_URL
 os.environ["MIN_WORKOUT_MINUTES"] = "30"
-os.environ["MIN_WORKOUT_CALORIES"] = "300"
+os.environ["MIN_WORKOUT_CALORIES"] = "400"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -33,7 +33,10 @@ from main import app, engine, issue_key  # noqa: E402
 def clean_db():
     with engine.begin() as conn:
         conn.execute(
-            text("TRUNCATE daily_activity, api_keys, users RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE daily_activity, api_keys, user_settings, users "
+                "RESTART IDENTITY CASCADE"
+            )
         )
     yield
 
