@@ -37,7 +37,6 @@ class DailyActivity(Base):
 
 
 class LogIn(BaseModel):
-    # JSON keys stay the same as the Shortcut sends them
     name: str = Field(min_length=1, max_length=50)
     date: dt.date
     minutes: int = Field(ge=0, le=1440)
@@ -47,6 +46,14 @@ class LogIn(BaseModel):
     @classmethod
     def normalize(cls, v: str) -> str:
         return v.strip().lower()
+
+    @field_validator("minutes", "calories", mode="before")
+    @classmethod
+    def round_to_int(cls, v):
+        try:
+            return round(float(v))
+        except (TypeError, ValueError):
+            raise ValueError("must be a number")
 
 
 app = FastAPI(title="Shared Workout Tracker")
