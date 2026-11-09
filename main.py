@@ -1,16 +1,28 @@
 import datetime as dt
 import os
+import secrets
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (Date, DateTime, ForeignKey, Integer, String,
                         UniqueConstraint, create_engine, func, select)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-# Neon gives postgresql://...; SQLAlchemy needs postgresql+psycopg://...
-engine = create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
+# Tolerate stray quotes/whitespace and a plain postgresql:// prefix
+raw_url = os.environ["DATABASE_URL"].strip().strip("'\"")
+if raw_url.startswith("postgresql://"):
+    raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+engine = create_engine(raw_url, pool_pre_ping=True)
+
 API_KEY = os.environ["API_KEY"]
+STATIC_DIR = Path(__file__).parent / "static"
+
+# A "workout day" needs BOTH thresholds met. Change via env vars, no code edit.
+MIN_MINUTES = int(os.getenv("MIN_WORKOUT_MINUTES", "30"))
+MIN_CALORIES = int(os.getenv("MIN_WORKOUT_CALORIES", "300"))
 
 
 class Base(DeclarativeBase):
@@ -37,6 +49,7 @@ class DailyActivity(Base):
 
 
 class LogIn(BaseModel):
+    # JSON keys stay the same as the Shortcut sends them
     name: str = Field(min_length=1, max_length=50)
     date: dt.date
     minutes: int = Field(ge=0, le=1440)
@@ -56,7 +69,7 @@ class LogIn(BaseModel):
             raise ValueError("must be a number")
 
 
-app = FastAPI(title="Shared Workout Tracker")
+app = FastAPI(title="Couples Workout Tracker")
 Base.metadata.create_all(engine)  # swap for Alembic migrations later
 
 
@@ -65,14 +78,18 @@ def get_session():
         yield session
 
 
-def require_key(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
+def require_key(x_api_key: str | None = Header(default=None)):
+    if x_api_key is None or not secrets.compare_digest(
+        x_api_key.encode(), API_KEY.encode()
+    ):
         raise HTTPException(status_code=401, detail="bad key")
 
 
 @app.get("/")
-def root():
-    return {"service": "workout-tracker", "docs": "/docs"}
+def dashboard():
+    # The page itself contains no secrets; it asks for the key and sends it
+    # with each request to the /api endpoints.
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -111,3 +128,69 @@ def log(body: LogIn, db: Session = Depends(get_session)):
     db.execute(stmt)
     db.commit()
     return {"status": "ok", "name": body.name, "date": body.date}
+
+
+@app.get("/api/activity", dependencies=[Depends(require_key)])
+def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_session)):
+    since = dt.date.today() - dt.timedelta(days=days)
+    rows = db.execute(
+        select(
+            User.name,
+            DailyActivity.date,
+            DailyActivity.exercise_minutes,
+            DailyActivity.active_calories,
+        )
+        .join(User, User.id == DailyActivity.user_id)
+        .where(DailyActivity.date >= since)
+        .order_by(DailyActivity.date, User.name)
+    ).all()
+    return [
+        {
+            "name": r.name,
+            "date": r.date.isoformat(),
+            "exercise_minutes": r.exercise_minutes,
+            "active_calories": r.active_calories,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/calendar", dependencies=[Depends(require_key)])
+def calendar_month(
+    month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    db: Session = Depends(get_session),
+):
+    year, mon = int(month[:4]), int(month[5:])
+    if not 1 <= mon <= 12:
+        raise HTTPException(status_code=422, detail="month must be YYYY-MM")
+    start = dt.date(year, mon, 1)
+    end = dt.date(year + (mon == 12), (mon % 12) + 1, 1)
+
+    users = db.scalars(select(User.name).order_by(User.name)).all()
+    rows = db.execute(
+        select(
+            User.name,
+            DailyActivity.date,
+            DailyActivity.exercise_minutes,
+            DailyActivity.active_calories,
+        )
+        .join(User, User.id == DailyActivity.user_id)
+        .where(DailyActivity.date >= start, DailyActivity.date < end)
+    ).all()
+
+    days: dict[str, dict] = {}
+    for r in rows:
+        days.setdefault(r.date.isoformat(), {})[r.name] = {
+            "exercise_minutes": r.exercise_minutes,
+            "active_calories": r.active_calories,
+            "workout": r.exercise_minutes >= MIN_MINUTES
+            and r.active_calories >= MIN_CALORIES,
+        }
+
+    return {
+        "month": month,
+        "users": users,
+        "min_minutes": MIN_MINUTES,
+        "min_calories": MIN_CALORIES,
+        "days": days,
+    }
