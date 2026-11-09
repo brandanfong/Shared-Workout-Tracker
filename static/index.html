@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workout Tracker</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2937; --muted: #6b7280;
+    --card: #f9fafb; --border: #e5e7eb; --grid: #e5e7eb; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111827; --fg: #f3f4f6; --muted: #9ca3af;
+      --card: #1f2937; --border: #374151; --grid: #374151; --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  h2 { font-size: 1rem; margin: 0; }
+  select, input[type=password], button {
+    font: inherit; padding: 6px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--card); color: var(--fg);
+  }
+  button { cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 16px; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .status { color: var(--muted); font-size: 0.9rem; min-height: 1.2em; margin-bottom: 8px; }
+  #auth { display: none; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  a.link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 0.85rem; }
+
+  .cal { max-width: 520px; margin: 0 auto; }
+  .month-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .month-nav strong { font-size: 1.05rem; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+  .dow { text-align: center; font-size: 0.75rem; color: var(--muted); }
+  .cell {
+    aspect-ratio: 1; border-radius: 8px; border: 1px solid var(--border);
+    padding: 4px 6px; font-size: 0.8rem; cursor: pointer; background: transparent;
+  }
+  .cell.blank { border: none; cursor: default; }
+  .cell.filled { color: #fff; font-weight: 700; border-color: transparent; }
+  .cell.today { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .cell.future { opacity: 0.4; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 0.9rem; }
+  .legend span.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  #dayDetail { margin-top: 10px; font-size: 0.85rem; color: var(--muted); white-space: pre-line; min-height: 2.4em; }
+  .chart-wrap { position: relative; height: 280px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Workout Tracker</h1>
+
+  <div id="auth">
+    <input id="keyInput" type="password" placeholder="API key" autocomplete="off">
+    <button class="primary" id="saveKey">Save</button>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Calendar</h2>
+      <a class="link" id="changeKey">Change key</a>
+    </div>
+    <div class="status" id="calStatus"></div>
+    <div class="cal">
+      <div class="month-nav">
+        <button id="prevMonth" aria-label="Previous month">&larr;</button>
+        <strong id="monthLabel"></strong>
+        <button id="nextMonth" aria-label="Next month">&rarr;</button>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="legend" id="legend"></div>
+      <div class="muted" id="threshold" style="margin-top:8px"></div>
+      <div id="dayDetail">Tap a day for details.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Trends</h2>
+      <div class="muted">
+        <label>Range
+          <select id="range">
+            <option value="14">14 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </label>
+        <label style="margin-left:10px"><input type="checkbox" id="avg" checked> 7-day average</label>
+      </div>
+    </div>
+    <div class="status" id="chartStatus"></div>
+    <h2 style="margin:8px 0">Exercise minutes</h2>
+    <div class="chart-wrap"><canvas id="minutesChart"></canvas></div>
+    <h2 style="margin:16px 0 8px">Active calories</h2>
+    <div class="chart-wrap"><canvas id="caloriesChart"></canvas></div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const KEY_STORAGE = 'wt_key';
+const PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#ec4899', '#eab308', '#14b8a6'];
+const ALL_COLOR = '#10b981';
+const charts = {};
+let USERS = [];
+let cal = { days: {}, users: [] };
+const now = new Date();
+let viewY = now.getFullYear();
+let viewM = now.getMonth() + 1;
+let chartRows = [];
+
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, '0');
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function getKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; } catch (e) { return ''; } }
+function setKey(k) { try { localStorage.setItem(KEY_STORAGE, k); } catch (e) {} }
+function clearKey() { try { localStorage.removeItem(KEY_STORAGE); } catch (e) {} }
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+function monthStr() { return viewY + '-' + pad(viewM); }
+function colorOf(name) {
+  const i = USERS.indexOf(name);
+  return PALETTE[(i >= 0 ? i : USERS.length) % PALETTE.length];
+}
+function showAuth(msg) {
+  $('auth').style.display = 'flex';
+  $('calStatus').textContent = msg;
+}
+
+async function apiGet(path) {
+  const key = getKey();
+  if (!key) { showAuth('Enter your API key to view the dashboard.'); return null; }
+  const res = await fetch(path, { headers: { 'X-API-Key': key } });
+  if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return null; }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  $('auth').style.display = 'none';
+  return res.json();
+}
+
+/* ---------- Calendar ---------- */
+
+function cellBackground(did) {
+  const n = USERS.length;
+  if (!did.length) return '';
+  if (n > 1 && did.length === n) return ALL_COLOR;
+  if (did.length === 1) return colorOf(did[0]);
+  const step = 100 / did.length;
+  const stops = did.map((u, i) => colorOf(u) + ' ' + (i * step) + '% ' + ((i + 1) * step) + '%');
+  return 'linear-gradient(135deg, ' + stops.join(', ') + ')';
+}
+
+function showDetail(iso, entry) {
+  const lines = USERS.map((u) => {
+    const e = entry[u];
+    if (!e) return cap(u) + ': no data';
+    return cap(u) + ': ' + e.exercise_minutes + ' min, ' + e.active_calories + ' cal' + (e.workout ? ' (workout day)' : '');
+  });
+  $('dayDetail').textContent = iso + '\n' + lines.join('\n');
+}
+
+function renderCalendar() {
+  const y = viewY, m = viewM;
+  $('monthLabel').textContent = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, {
+    month: 'long', year: 'numeric', timeZone: 'UTC',
+  });
+  const isCurrent = (y === now.getFullYear() && m === now.getMonth() + 1);
+  $('nextMonth').disabled = isCurrent;
+
+  const grid = $('calGrid');
+  grid.innerHTML = '';
+  ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach((d) => {
+    const el = document.createElement('div');
+    el.className = 'dow';
+    el.textContent = d;
+    grid.appendChild(el);
+  });
+
+  const first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  for (let i = 0; i < first; i++) {
+    const el = document.createElement('div');
+    el.className = 'cell blank';
+    grid.appendChild(el);
+  }
+
+  const n = USERS.length;
+  const counts = {};
+  USERS.forEach((u) => { counts[u] = 0; });
+  let allCount = 0;
+  const today = todayStr();
+
+  for (let d = 1; d <= dim; d++) {
+    const iso = y + '-' + pad(m) + '-' + pad(d);
+    const entry = cal.days[iso] || {};
+    const did = USERS.filter((u) => entry[u] && entry[u].workout);
+    did.forEach((u) => { counts[u]++; });
+    if (n > 1 && did.length === n) allCount++;
+
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.textContent = String(d);
+    if (did.length) {
+      cell.classList.add('filled');
+      cell.style.background = cellBackground(did);
+    }
+    if (iso === today) cell.classList.add('today');
+    if (iso > today) cell.classList.add('future');
+    cell.addEventListener('click', () => showDetail(iso, entry));
+    grid.appendChild(cell);
+  }
+
+  const legend = $('legend');
+  legend.innerHTML = '';
+  USERS.forEach((u) => {
+    const item = document.createElement('div');
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    sw.style.background = colorOf(u);
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode(cap(u) + ': ' + counts[u]));
+    legend.appendChild(item);
+  });
+  if (n > 1) {
+    const item = document.createElement('div');
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    sw.style.background = ALL_COLOR;
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode('Everyone: ' + allCount));
+    legend.appendChild(item);
+  }
+  $('threshold').textContent =
+    'Workout day = at least ' + cal.min_minutes + ' exercise minutes and ' + cal.min_calories + ' active calories.';
+}
+
+async function loadCalendar() {
+  $('calStatus').textContent = 'Loading... (the server can take up to a minute to wake up)';
+  try {
+    const data = await apiGet('/api/calendar?month=' + monthStr());
+    if (!data) return false;
+    cal = data;
+    USERS = data.users;
+    renderCalendar();
+    $('calStatus').textContent = '';
+    return true;
+  } catch (e) {
+    $('calStatus').textContent = 'Could not load data. Try again in a moment.';
+    return false;
+  }
+}
+
+/* ---------- Charts ---------- */
+
+function dateRange(rows) {
+  if (!rows.length) return [];
+  const dates = rows.map((r) => r.date).sort();
+  const out = [];
+  let d = new Date(dates[0] + 'T00:00:00Z');
+  const end = new Date(dates[dates.length - 1] + 'T00:00:00Z');
+  while (d <= end) {
+    out.push(d.toISOString().slice(0, 10));
+    d = new Date(d.getTime() + 86400000);
+  }
+  return out;
+}
+
+function rollingAvg(values, window) {
+  return values.map((_, i) => {
+    const slice = values.slice(Math.max(0, i - window + 1), i + 1).filter((v) => v !== null);
+    if (!slice.length) return null;
+    return Math.round(slice.reduce((a, b) => a + b, 0) / slice.length);
+  });
+}
+
+function buildChart(canvasId, field, rows, showAvg, goal, goalLabel) {
+  const labels = dateRange(rows);
+  const names = [...new Set(rows.map((r) => r.name))].sort();
+  const datasets = [];
+
+  names.forEach((name) => {
+    const color = colorOf(name);
+    const byDate = {};
+    rows.filter((r) => r.name === name).forEach((r) => { byDate[r.date] = r[field]; });
+    const values = labels.map((d) => (d in byDate ? byDate[d] : null));
+
+    datasets.push({
+      label: cap(name), data: values, borderColor: color, backgroundColor: color,
+      borderWidth: 2, pointRadius: 3, tension: 0.25, spanGaps: true,
+    });
+    if (showAvg) {
+      datasets.push({
+        label: cap(name) + ' (7-day avg)', data: rollingAvg(values, 7),
+        borderColor: color, backgroundColor: color, borderWidth: 2,
+        borderDash: [6, 4], pointRadius: 0, tension: 0.35, spanGaps: true,
+      });
+    }
+  });
+
+  if (goal && labels.length) {
+    datasets.push({
+      label: goalLabel + ' (' + goal + ')',
+      data: labels.map(() => goal),
+      borderColor: cssVar('--muted'), backgroundColor: cssVar('--muted'),
+      borderWidth: 1.5, borderDash: [2, 4], pointRadius: 0, tension: 0, spanGaps: true,
+    });
+  }
+
+  if (charts[canvasId]) charts[canvasId].destroy();
+  const tick = cssVar('--muted');
+  const grid = cssVar('--grid');
+  charts[canvasId] = new Chart($(canvasId), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: tick, usePointStyle: true } } },
+      scales: {
+        x: { ticks: { color: tick, maxTicksLimit: 8 }, grid: { color: grid } },
+        y: { beginAtZero: true, ticks: { color: tick }, grid: { color: grid } },
+      },
+    },
+  });
+}
+
+function renderCharts() {
+  const showAvg = $('avg').checked;
+  $('chartStatus').textContent = chartRows.length ? '' : 'No data in this range yet.';
+  buildChart('minutesChart', 'exercise_minutes', chartRows, showAvg, cal.min_minutes, 'Goal');
+  buildChart('caloriesChart', 'active_calories', chartRows, showAvg, cal.min_calories, 'Goal');
+}
+
+async function loadCharts() {
+  try {
+    const data = await apiGet('/api/activity?days=' + $('range').value);
+    if (!data) return;
+    chartRows = data;
+    renderCharts();
+  } catch (e) {
+    $('chartStatus').textContent = 'Could not load chart data. Try again in a moment.';
+  }
+}
+
+/* ---------- Wiring ---------- */
+
+$('saveKey').addEventListener('click', () => {
+  const v = $('keyInput').value.trim();
+  if (v) { setKey(v); $('keyInput').value = ''; init(); }
+});
+$('changeKey').addEventListener('click', () => { clearKey(); showAuth('Enter a new API key.'); });
+$('prevMonth').addEventListener('click', () => {
+  viewM -= 1;
+  if (viewM < 1) { viewM = 12; viewY -= 1; }
+  loadCalendar();
+});
+$('nextMonth').addEventListener('click', () => {
+  viewM += 1;
+  if (viewM > 12) { viewM = 1; viewY += 1; }
+  loadCalendar();
+});
+$('range').addEventListener('change', loadCharts);
+$('avg').addEventListener('change', renderCharts);
+
+async function init() {
+  if (await loadCalendar()) await loadCharts();
+}
+init();
+</script>
+</body>
+</html>
