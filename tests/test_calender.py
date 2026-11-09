@@ -22,10 +22,10 @@ def test_activity_requires_key(client):
 
 
 def test_workout_day_needs_both_thresholds(client, auth, log):
-    log(date="2026-11-01", minutes=30, calories=300)  # exactly on both thresholds
-    log(date="2026-11-02", minutes=45, calories=200)  # calories too low
-    log(date="2026-11-03", minutes=20, calories=400)  # minutes too low
-    log(date="2026-11-04", minutes=45, calories=400)  # clearly a workout day
+    log(date="2026-11-01", minutes=30, calories=400)  # exactly on both thresholds
+    log(date="2026-11-02", minutes=45, calories=300)  # calories too low
+    log(date="2026-11-03", minutes=20, calories=500)  # minutes too low
+    log(date="2026-11-04", minutes=45, calories=500)  # clearly a workout day
 
     data = client.get("/api/calendar?month=2026-11", headers=auth).json()
     days = data["days"]
@@ -33,8 +33,7 @@ def test_workout_day_needs_both_thresholds(client, auth, log):
     assert days["2026-11-02"]["brandan"]["workout"] is False
     assert days["2026-11-03"]["brandan"]["workout"] is False
     assert days["2026-11-04"]["brandan"]["workout"] is True
-    assert data["min_minutes"] == 30
-    assert data["min_calories"] == 300
+    assert data["goals"]["brandan"] == {"min_minutes": 30, "min_calories": 400}
 
 
 def test_calendar_only_includes_requested_month(client, auth, log):
