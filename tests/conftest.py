@@ -19,20 +19,22 @@ if _norm(TEST_URL) == _norm(os.environ.get("DATABASE_URL")):
 
 # Must be set BEFORE main is imported (it reads these at import time).
 os.environ["DATABASE_URL"] = TEST_URL
-os.environ["API_KEY"] = "test-key"
 os.environ["MIN_WORKOUT_MINUTES"] = "30"
 os.environ["MIN_WORKOUT_CALORIES"] = "300"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
-from main import app, engine  # noqa: E402
+from main import app, engine, issue_key  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def clean_db():
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE daily_activity, users RESTART IDENTITY CASCADE"))
+        conn.execute(
+            text("TRUNCATE daily_activity, api_keys, users RESTART IDENTITY CASCADE")
+        )
     yield
 
 
@@ -42,19 +44,43 @@ def client():
 
 
 @pytest.fixture
-def auth():
-    return {"X-API-Key": "test-key"}
+def make_key():
+    """Create a person (if needed) and a fresh key for them. Returns the raw key."""
+
+    def _make(name="brandan", label=None):
+        with Session(engine) as db:
+            return issue_key(db, name, label)
+
+    return _make
 
 
 @pytest.fixture
-def log(client, auth):
-    """POST /log with sensible defaults. When auth changes later (per-user
-    keys), this is the one place to update."""
+def headers(make_key):
+    """Auth headers for a person. Creates their key once per test."""
+    cache = {}
 
-    def _log(**overrides):
-        body = {"name": "Brandan", "date": "2026-11-08", "minutes": 45, "calories": 400}
+    def _headers(name="brandan"):
+        if name not in cache:
+            cache[name] = {"X-API-Key": make_key(name)}
+        return cache[name]
+
+    return _headers
+
+
+@pytest.fixture
+def auth(headers):
+    return headers("brandan")
+
+
+@pytest.fixture
+def log(client, headers):
+    """POST /log as a given person. The server decides who the user is from
+    the key, so there is no name in the body."""
+
+    def _log(as_user="brandan", **overrides):
+        body = {"date": "2026-11-08", "minutes": 45, "calories": 400}
         body.update(overrides)
-        return client.post("/log", json=body, headers=auth)
+        return client.post("/log", json=body, headers=headers(as_user))
 
     return _log
 

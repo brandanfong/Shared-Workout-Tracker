@@ -1,4 +1,5 @@
 import datetime as dt
+import hashlib
 import os
 import secrets
 from pathlib import Path
@@ -17,7 +18,6 @@ if raw_url.startswith("postgresql://"):
     raw_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
 engine = create_engine(raw_url, pool_pre_ping=True)
 
-API_KEY = os.environ["API_KEY"]
 STATIC_DIR = Path(__file__).parent / "static"
 
 # A "workout day" needs BOTH thresholds met. Change via env vars, no code edit.
@@ -35,6 +35,22 @@ class User(Base):
     name: Mapped[str] = mapped_column(String, unique=True)
 
 
+class ApiKey(Base):
+    """One row per key. Only a hash is stored, never the key itself."""
+
+    __tablename__ = "api_keys"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    key_hash: Mapped[str] = mapped_column(String, unique=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class DailyActivity(Base):
     __tablename__ = "daily_activity"
     __table_args__ = (UniqueConstraint("user_id", "date"),)
@@ -49,16 +65,11 @@ class DailyActivity(Base):
 
 
 class LogIn(BaseModel):
-    # JSON keys stay the same as the Shortcut sends them
-    name: str = Field(min_length=1, max_length=50)
+    # The user now comes from the API key. A "name" field sent by an older
+    # Shortcut is simply ignored.
     date: dt.date
     minutes: int = Field(ge=0, le=1440)
     calories: int = Field(ge=0, le=20000)
-
-    @field_validator("name")
-    @classmethod
-    def normalize(cls, v: str) -> str:
-        return v.strip().lower()
 
     @field_validator("minutes", "calories", mode="before")
     @classmethod
@@ -78,16 +89,46 @@ def get_session():
         yield session
 
 
-def require_key(x_api_key: str | None = Header(default=None)):
-    if x_api_key is None or not secrets.compare_digest(
-        x_api_key.encode(), API_KEY.encode()
-    ):
+def hash_key(key: str) -> str:
+    # Keys are long and random, so a plain SHA-256 is enough (bcrypt/argon2
+    # are for human-chosen passwords).
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def issue_key(db: Session, name: str, label: str | None = None) -> str:
+    """Create a new key for a person (creating the person if needed).
+    Returns the raw key. It is shown once and cannot be recovered."""
+    name = name.strip().lower()
+    user = db.scalar(select(User).where(User.name == name))
+    if user is None:
+        user = User(name=name)
+        db.add(user)
+        db.flush()
+    key = secrets.token_urlsafe(32)
+    db.add(ApiKey(user_id=user.id, key_hash=hash_key(key), label=label))
+    db.commit()
+    return key
+
+
+def current_user(
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_session),
+) -> User:
+    if x_api_key is None:
         raise HTTPException(status_code=401, detail="bad key")
+    user = db.scalar(
+        select(User)
+        .join(ApiKey, ApiKey.user_id == User.id)
+        .where(ApiKey.key_hash == hash_key(x_api_key), ApiKey.revoked_at.is_(None))
+    )
+    if user is None:
+        raise HTTPException(status_code=401, detail="bad key")
+    return user
 
 
 @app.get("/")
 def dashboard():
-    # The page itself contains no secrets; it asks for the key and sends it
+    # The page itself contains no secrets; it asks for your key and sends it
     # with each request to the /api endpoints.
     return FileResponse(STATIC_DIR / "index.html")
 
@@ -97,15 +138,12 @@ def health():
     return {"ok": True}
 
 
-@app.post("/log", dependencies=[Depends(require_key)])
-def log(body: LogIn, db: Session = Depends(get_session)):
-    # get or create user
-    user = db.scalar(select(User).where(User.name == body.name))
-    if user is None:
-        user = User(name=body.name)
-        db.add(user)
-        db.flush()
-
+@app.post("/log")
+def log(
+    body: LogIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
     stmt = insert(DailyActivity).values(
         user_id=user.id,
         date=body.date,
@@ -127,10 +165,10 @@ def log(body: LogIn, db: Session = Depends(get_session)):
     )
     db.execute(stmt)
     db.commit()
-    return {"status": "ok", "name": body.name, "date": body.date}
+    return {"status": "ok", "name": user.name, "date": body.date}
 
 
-@app.get("/api/activity", dependencies=[Depends(require_key)])
+@app.get("/api/activity", dependencies=[Depends(current_user)])
 def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_session)):
     since = dt.date.today() - dt.timedelta(days=days)
     rows = db.execute(
@@ -155,7 +193,7 @@ def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_sess
     ]
 
 
-@app.get("/api/calendar", dependencies=[Depends(require_key)])
+@app.get("/api/calendar", dependencies=[Depends(current_user)])
 def calendar_month(
     month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
     db: Session = Depends(get_session),

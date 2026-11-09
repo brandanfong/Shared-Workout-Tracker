@@ -61,8 +61,8 @@ def test_calendar_lists_users_even_without_rows_that_month(client, auth, log):
 
 
 def test_calendar_separates_users(client, auth, log):
-    log(name="brandan", date="2026-11-05", minutes=45, calories=400)
-    log(name="sam", date="2026-11-05", minutes=10, calories=100)
+    log(as_user="brandan", date="2026-11-05", minutes=45, calories=400)
+    log(as_user="sam", date="2026-11-05", minutes=10, calories=100)
     day = client.get("/api/calendar?month=2026-11", headers=auth).json()["days"]["2026-11-05"]
     assert day["brandan"]["workout"] is True
     assert day["sam"]["workout"] is False

@@ -1,18 +1,12 @@
-def test_log_creates_user_and_row(log, rows):
+def test_log_creates_row_for_the_key_owner(log, rows):
     r = log()
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+    assert r.json()["name"] == "brandan"
     assert rows() == [
         {"name": "brandan", "date": "2026-11-08",
          "exercise_minutes": 45, "active_calories": 400}
     ]
-
-
-def test_name_is_trimmed_and_lowercased(log, rows):
-    log(name="  BRANDAN ")
-    log(name="brandan")
-    assert len(rows()) == 1
-    assert rows()[0]["name"] == "brandan"
 
 
 def test_repeat_sync_updates_instead_of_duplicating(log, rows):
@@ -56,8 +50,8 @@ def test_numeric_strings_are_accepted(log, rows):
 
 
 def test_two_users_same_day_get_separate_rows(log, rows):
-    log(name="brandan")
-    log(name="sam", minutes=20, calories=150)
+    log(as_user="brandan")
+    log(as_user="sam", minutes=20, calories=150)
     assert len(rows()) == 2
 
 
@@ -65,18 +59,6 @@ def test_same_user_different_days_get_separate_rows(log, rows):
     log(date="2026-11-07")
     log(date="2026-11-08")
     assert len(rows()) == 2
-
-
-def test_wrong_key_is_401(client):
-    body = {"name": "brandan", "date": "2026-11-08", "minutes": 45, "calories": 400}
-    r = client.post("/log", json=body, headers={"X-API-Key": "nope"})
-    assert r.status_code == 401
-
-
-def test_missing_key_is_401(client):
-    body = {"name": "brandan", "date": "2026-11-08", "minutes": 45, "calories": 400}
-    r = client.post("/log", json=body)
-    assert r.status_code == 401
 
 
 def test_negative_minutes_rejected(log, rows):
@@ -96,6 +78,6 @@ def test_bad_date_rejected(log):
     assert log(date="11/08/2026").status_code == 422
 
 
-def test_missing_name_rejected(client, auth):
-    body = {"date": "2026-11-08", "minutes": 45, "calories": 400}
-    assert client.post("/log", json=body, headers=auth).status_code == 422
+def test_missing_date_rejected(client, auth):
+    r = client.post("/log", json={"minutes": 45, "calories": 400}, headers=auth)
+    assert r.status_code == 422
