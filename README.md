@@ -9,7 +9,7 @@ goals, and keeps one shared points balance that you can redeem for rewards.
 
 ## What it does
 
-- **Calendar**: who had a workout day, with each person in their own color. A day when
+- **Calendar**: who had a complete workout (both goals met), with each person in their own color. A day when
   everyone worked out is solid green with a star. Tap a name to hide or show someone,
   double-tap to show only them.
 - **Trends**: minutes and calories over time with a 7-day average and goal lines.
@@ -31,7 +31,7 @@ a reward. Missing data counts as zero, never as a penalty.
 | What | When it is paid | Points |
 |---|---|---|
 | Daily calorie goal | 2 days after each day (see below) | 100% of goal +1, 150% +2, 200% +3 (highest tier only) |
-| Workout day (minutes **and** calories goals both met) | 2 days after each day | +2 each |
+| Complete workout (minutes **and** calories goals both met) | 2 days after each day | +2 each |
 | Hit calorie goal on 6 / 7 days in the week | when the week closes | +3 / +5 |
 | Hit your weekly workout target | when the week closes | +4 |
 | Team bonus (everyone had a successful week) | when the week closes | +4 |

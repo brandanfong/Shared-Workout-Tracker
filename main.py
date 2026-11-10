@@ -516,10 +516,32 @@ def set_my_color(
     return {"color": effective_colors(db)[user.name], "custom": user.color is not None}
 
 
+MAX_RANGE_DAYS = 730
+
+
 @app.get("/api/activity", dependencies=[Depends(current_user)])
-def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_session)):
-    since = dt.date.today() - dt.timedelta(days=days)
-    rows = db.execute(
+def activity(
+    days: int = Query(30, ge=1, le=365),
+    start: dt.date | None = None,
+    end: dt.date | None = None,
+    db: Session = Depends(get_session),
+):
+    """Daily activity for the charts. Either the last `days` days, or a custom
+    range with `start` and/or `end` (both inclusive; `end` defaults to today and
+    `start` to `days` before it)."""
+    today = _today()
+    if start is None and end is None:
+        first, last = today - dt.timedelta(days=days), None
+    else:
+        last = end or today
+        first = start or last - dt.timedelta(days=days)
+        if first > last:
+            raise HTTPException(status_code=422, detail="The start date must be on or before the end date.")
+        if (last - first).days > MAX_RANGE_DAYS:
+            raise HTTPException(
+                status_code=422, detail=f"Pick a range of {MAX_RANGE_DAYS} days or fewer."
+            )
+    stmt = (
         select(
             User.name,
             DailyActivity.date,
@@ -527,9 +549,11 @@ def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_sess
             DailyActivity.active_calories,
         )
         .join(User, User.id == DailyActivity.user_id)
-        .where(DailyActivity.date >= since)
+        .where(DailyActivity.date >= first)
         .order_by(DailyActivity.date, User.name)
-    ).all()
+    )
+    if last is not None:
+        stmt = stmt.where(DailyActivity.date <= last)
     return [
         {
             "name": r.name,
@@ -537,7 +561,7 @@ def activity(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_sess
             "exercise_minutes": r.exercise_minutes,
             "active_calories": r.active_calories,
         }
-        for r in rows
+        for r in db.execute(stmt).all()
     ]
 
 

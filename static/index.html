@@ -70,6 +70,13 @@
   /* Selected day: a solid inner ring, so it reads differently from today's outer outline. */
   .cell.selected { box-shadow: inset 0 0 0 3px var(--fg); font-weight: 700; }
   .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 0.9rem; }
+  .chart-help { color: var(--muted); font-size: 0.85rem; line-height: 1.5; margin-bottom: 10px; }
+  .chart-help strong { color: var(--fg); }
+  .chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; color: var(--muted); font-size: 0.85rem; }
+  .chart-controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .custom-range { display: inline-flex; align-items: center; gap: 6px; }
+  .custom-range[hidden] { display: none; }
+  .custom-range input[type=date] { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--fg); }
   .goal-box { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
   .goal-title { font-weight: 600; font-size: 0.9rem; }
   .goal-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.9rem; }
@@ -107,6 +114,7 @@
   .earned-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .earned-pts { font-variant-numeric: tabular-nums; }
   .earned-item.me { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 8px; padding: 3px 8px; margin: -3px -8px; font-weight: 600; }
+  .legend .you { margin: 0 2px 0 6px; }
   .you { font-size: 0.68rem; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; line-height: 1.5; }
   .reward .actions { display: flex; gap: 8px; align-items: center; }
   .cost { font-weight: 700; white-space: nowrap; }
@@ -189,19 +197,32 @@
   <div class="card">
     <div class="card-head">
       <h2>Trends</h2>
-      <div class="muted">
+      <div class="chart-controls">
         <label>Range
           <select id="range">
+            <option value="7">7 Days</option>
             <option value="14">14 Days</option>
             <option value="30" selected>30 Days</option>
             <option value="60">60 Days</option>
             <option value="90">90 Days</option>
+            <option value="custom">Custom</option>
           </select>
         </label>
-        <label style="margin-left:10px"><input type="checkbox" id="showGoals" checked> Goal Lines</label>
+        <span class="custom-range" id="customRange" hidden>
+          <input type="date" id="rangeFrom" aria-label="From date">
+          <span>to</span>
+          <input type="date" id="rangeTo" aria-label="To date">
+        </span>
+        <label><input type="checkbox" id="showDots" checked> Daily Dots</label>
+        <label><input type="checkbox" id="showAvg" checked> Average Line</label>
+        <label><input type="checkbox" id="showGoals" checked> Goal Lines</label>
       </div>
     </div>
-    <div class="muted" style="margin-bottom:8px">Dots are daily values (filled = met your goal, hollow = below it). Bold line = 7-day average, dashed = goal. You are shown by default; tap a name to show or hide someone, or double-tap to show only them.</div>
+    <div class="chart-help">
+      <div><strong>Dots</strong> are daily values: filled means you met your goal, hollow means you didn't.</div>
+      <div><strong>Solid line</strong> is the 7-day average. <strong>Dashed line</strong> is the goal.</div>
+      <div>Tap a name in the legend to show or hide someone, or double-tap to show only them. Only you are shown at first.</div>
+    </div>
     <div class="status" id="chartStatus"></div>
     <h2 style="margin:8px 0">Exercise Minutes</h2>
     <div class="chart-wrap"><canvas id="minutesChart"></canvas></div>
@@ -265,7 +286,7 @@
       </label>
       <button class="primary" id="saveGoals">Save</button>
     </div>
-    <div class="muted" style="margin-top:8px">Minutes and calories apply from the day you save, and each past day keeps the goal it was judged by. Workouts per week can be changed any time during the week and locks when the week ends on Sunday. A day counts as a workout day when you hit both the minutes and calories. Your calorie goal is also what daily points are measured against, and your weekly workouts goal is what you need for the weekly bonus and a successful week.</div>
+    <div class="muted" style="margin-top:8px">Minutes and calories apply from the day you save, and each past day keeps the goal it was judged by. Workouts per week can be changed any time during the week and locks when the week ends on Sunday. A day is a complete workout when you hit both the minutes and calories. Your calorie goal is also what daily points are measured against, and your weekly workouts goal is what you need for the weekly bonus and a successful week.</div>
     <div class="status" id="goalStatus" style="margin-top:6px"></div>
   </div>
 
@@ -339,10 +360,13 @@ const METRIC_KEY = 'wt_cal_metric';
 // What the calendar colors show. Rename the labels here.
 const METRICS = {
   workout: { label: 'Complete Workout', hit: (e) => e.workout,
+             goal: (g) => g.min_minutes + ' min  \u00b7  ' + g.min_calories + ' cal',
              note: 'A day is a complete workout when you reach both your minutes and your calorie goal.' },
   calories: { label: 'Active Calories', hit: (e) => e.calorie_hit,
+              goal: (g) => g.min_calories + ' cal',
               note: 'A day counts when you reach your calorie goal.' },
   minutes: { label: 'Exercise Minutes', hit: (e) => e.minutes_hit,
+             goal: (g) => g.min_minutes + ' min',
              note: 'A day counts when you reach your exercise minutes goal.' },
 };
 let calMetric = 'workout';
@@ -440,13 +464,14 @@ function showDetail(iso, entry) {
     dot.style.background = colorOf(u);
     row.appendChild(dot);
     row.appendChild(el('strong', null, cap(u)));
+    if (u === myName) row.appendChild(el('span', 'you', 'You'));
     if (!e) {
       row.appendChild(el('span', 'vals', 'no data'));
     } else {
       row.appendChild(el('span', 'vals', e.exercise_minutes + ' min  ·  ' + e.active_calories + ' cal'));
-      if (e.workout) row.appendChild(el('span', 'badge', 'Workout day'));
-      else if (e.calorie_hit) row.appendChild(el('span', 'badge soft', 'Active day (calories only)'));
-      else if (e.minutes_hit) row.appendChild(el('span', 'badge soft', 'Minutes only'));
+      if (e.workout) row.appendChild(el('span', 'badge', METRICS.workout.label));
+      else if (e.calorie_hit) row.appendChild(el('span', 'badge soft', METRICS.calories.label + ' Only'));
+      else if (e.minutes_hit) row.appendChild(el('span', 'badge soft', METRICS.minutes.label + ' Only'));
     }
     box.appendChild(row);
   });
@@ -531,7 +556,9 @@ function renderCalendar() {
     sw.className = 'sw';
     sw.style.background = colorOf(u);
     item.appendChild(sw);
-    item.appendChild(document.createTextNode(cap(u) + ': ' + counts[u]));
+    item.appendChild(document.createTextNode(cap(u)));
+    if (u === myName) item.appendChild(el('span', 'you', 'You'));
+    item.appendChild(document.createTextNode(': ' + counts[u]));
     const toggle = () => legendClick(
       'cal',
       u,
@@ -573,7 +600,8 @@ function renderCalendar() {
     dot.style.background = colorOf(u);
     row.appendChild(dot);
     row.appendChild(el('strong', null, cap(u)));
-    row.appendChild(el('span', 'goal-vals', g.min_minutes + ' min  ·  ' + g.min_calories + ' cal'));
+    if (u === myName) row.appendChild(el('span', 'you', 'You'));
+    row.appendChild(el('span', 'goal-vals', METRICS[calMetric].goal(g)));
     box.appendChild(row);
   });
 }
@@ -595,6 +623,66 @@ async function loadCalendar() {
 }
 
 /* ---------- Charts ---------- */
+
+const CHART_PREFS_KEY = 'wt_chart_prefs';
+let chartWindow = null;  // { start, end }: the dates the charts span
+
+function isoAddDays(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function isoRange(start, end) {
+  const out = [];
+  for (let d = start; d <= end; d = isoAddDays(d, 1)) out.push(d);
+  return out;
+}
+
+function chartOptions() {
+  return { goalLines: $('showGoals').checked, dots: $('showDots').checked, avg: $('showAvg').checked };
+}
+
+function saveChartPrefs() {
+  try {
+    localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({
+      range: $('range').value, from: $('rangeFrom').value, to: $('rangeTo').value,
+      goals: $('showGoals').checked, dots: $('showDots').checked, avg: $('showAvg').checked,
+    }));
+  } catch (e) {}
+}
+
+function initChartControls() {
+  const today = todayStr();
+  $('rangeFrom').value = isoAddDays(today, -29);
+  $('rangeTo').value = today;
+  try {
+    const p = JSON.parse(localStorage.getItem(CHART_PREFS_KEY) || '{}');
+    if (p.range && [...$('range').options].some((o) => o.value === p.range)) $('range').value = p.range;
+    if (p.from) $('rangeFrom').value = p.from;
+    if (p.to) $('rangeTo').value = p.to;
+    if (typeof p.goals === 'boolean') $('showGoals').checked = p.goals;
+    if (typeof p.dots === 'boolean') $('showDots').checked = p.dots;
+    if (typeof p.avg === 'boolean') $('showAvg').checked = p.avg;
+    if (!$('showDots').checked && !$('showAvg').checked) $('showAvg').checked = true;
+  } catch (e) {}
+  $('customRange').hidden = $('range').value !== 'custom';
+}
+
+// What to ask the server for, from the range controls. null if a custom range is not valid yet.
+function chartQuery() {
+  const v = $('range').value;
+  if (v !== 'custom') {
+    const days = parseInt(v, 10);
+    const today = todayStr();
+    return { query: 'days=' + days, start: isoAddDays(today, -days), end: today, custom: false };
+  }
+  const from = $('rangeFrom').value, to = $('rangeTo').value;
+  if (!from || !to) { say('chartStatus', 'Pick both a start and an end date.', true); return null; }
+  if (from > to) { say('chartStatus', 'The start date must be on or before the end date.', true); return null; }
+  if ((new Date(to) - new Date(from)) / 86400000 > 730) { say('chartStatus', 'Pick a range of 730 days or fewer.', true); return null; }
+  return { query: 'start=' + from + '&end=' + to, start: from, end: to, custom: true };
+}
 
 function dateRange(rows) {
   if (!rows.length) return [];
@@ -674,12 +762,12 @@ function goalLines(key, names) {
   }));
 }
 
-function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
-  const labels = dateRange(rows);
+function buildChart(canvasId, field, goalKey, rows, opts) {
+  const showGoalLines = opts.goalLines;
+  const labels = chartWindow ? isoRange(chartWindow.start, chartWindow.end) : dateRange(rows);
   const names = [...new Set(rows.map((r) => r.name))].sort();
   const datasets = [];
   const lines = showGoalLines && labels.length ? goalLines(goalKey, names) : [];
-  const perPersonGoals = lines.length > 0 && lines[0].person !== null;
   const hollow = cssVar('--card');
 
   names.forEach((name) => {
@@ -690,30 +778,37 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
     const values = labels.map((d) => (d in byDate ? byDate[d] : null));
     const hidden = !isShown(name);
 
+    // The person's legend entry is their average line; with that line off it moves to their dots.
+    const entryName = cap(name);
+
     // Daily values: dots only, no connecting line.
     // Filled = at or above your goal, hollow = below it.
-    datasets.push({
-      label: cap(name) + ' (Daily)',
-      _person: name, _kind: 'daily', _goal: goal, _hideLegend: true,
-      hidden, order: 2,
-      data: values,
-      showLine: false,
-      borderColor: color,
-      pointBorderColor: color,
-      pointBackgroundColor: values.map((v) => (v !== null && goal !== null && v >= goal ? color : hollow)),
-      pointBorderWidth: 2, pointRadius: 3.5, pointHoverRadius: 5,
-    });
+    if (opts.dots) {
+      datasets.push({
+        label: opts.avg ? cap(name) + ' (Daily)' : entryName,
+        _person: name, _kind: 'daily', _goal: goal, _hideLegend: opts.avg,
+        hidden, order: 2,
+        data: values,
+        showLine: false,
+        borderColor: color,
+        pointBorderColor: color,
+        pointBackgroundColor: values.map((v) => (v !== null && goal !== null && v >= goal ? color : hollow)),
+        pointBorderWidth: 2, pointRadius: 3.5, pointHoverRadius: 5,
+      });
+    }
 
-    // The trend: bold solid 7-day average. This is the legend entry for the person.
-    datasets.push({
-      label: perPersonGoals && goal !== null ? cap(name) + ' (Goal ' + goal + ')' : cap(name),
-      _person: name, _kind: 'avg',
-      hidden, order: 1,
-      data: rollingAvg(values, 7),
-      borderColor: color, backgroundColor: color,
-      borderWidth: 2.75, pointRadius: 0, pointHoverRadius: 0,
-      tension: 0.35, spanGaps: true,
-    });
+    // The trend: bold solid 7-day average.
+    if (opts.avg) {
+      datasets.push({
+        label: entryName,
+        _person: name, _kind: 'avg', _goal: goal,
+        hidden, order: 1,
+        data: rollingAvg(values, 7),
+        borderColor: color, backgroundColor: color,
+        borderWidth: 2.75, pointRadius: 0, pointHoverRadius: 0,
+        tension: 0.35, spanGaps: true,
+      });
+    }
   });
 
   // Goal lines: thin, dashed, drawn underneath. Per-person lines follow that person's visibility.
@@ -744,7 +839,7 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
           labels: {
             color: tick,
             usePointStyle: true,
-            pointStyle: 'line',
+            pointStyle: opts.avg ? 'line' : 'circle',
             // One entry per person (their average line), plus the shared goal line if there is one.
             filter: (item, data) => !data.datasets[item.datasetIndex]._hideLegend,
           },
@@ -776,7 +871,7 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
               if (d._kind === 'daily') {
                 return cap(d._person) + ': ' + v + (d._goal !== null && v >= d._goal ? ' (Goal Met)' : '');
               }
-              if (d._kind === 'avg') return cap(d._person) + ' 7-Day Avg: ' + v;
+              if (d._kind === 'avg') return cap(d._person) + ' 7-Day Avg: ' + v + (d._goal !== null ? ' (Goal ' + d._goal + ')' : '');
               return d.label;
             },
           },
@@ -791,17 +886,23 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
 }
 
 function renderCharts() {
-  const showGoalLines = $('showGoals').checked;
-  say('chartStatus', chartRows.length ? '' : 'No data in this range yet.');
-  buildChart('minutesChart', 'exercise_minutes', 'min_minutes', chartRows, showGoalLines);
-  buildChart('caloriesChart', 'active_calories', 'min_calories', chartRows, showGoalLines);
+  const opts = chartOptions();
+  if (!chartRows.length) say('chartStatus', 'No data in this range yet.');
+  else say('chartStatus', '');
+  buildChart('minutesChart', 'exercise_minutes', 'min_minutes', chartRows, opts);
+  buildChart('caloriesChart', 'active_calories', 'min_calories', chartRows, opts);
 }
 
 async function loadCharts() {
+  const q = chartQuery();
+  if (!q) return;  // a custom range that is not valid yet; the message is already showing
   try {
-    const data = await apiGet('/api/activity?days=' + $('range').value);
+    const data = await apiGet('/api/activity?' + q.query);
     if (!data) return;
     chartRows = data;
+    // Span the whole requested window, not just the days that have data.
+    const lastRow = data.length ? data[data.length - 1].date : q.end;
+    chartWindow = { start: q.start, end: q.custom || lastRow < q.end ? q.end : lastRow };
     renderCharts();
   } catch (e) {
     say('chartStatus', 'Could not load chart data. Try again in a moment.', true);
@@ -815,6 +916,7 @@ async function loadMe() {
     const me = await apiGet('/api/me');
     if (!me) return;
     myName = me.name;
+    if (cal.users && cal.users.length) renderCalendar();
     if (visiblePeople === null) visiblePeople = new Set([me.name]);
     $('goalMinutes').value = me.min_minutes;
     $('goalCalories').value = me.min_calories;
@@ -1224,9 +1326,27 @@ $('nextMonth').addEventListener('click', () => {
   if (viewM > 12) { viewM = 1; viewY += 1; }
   loadCalendar();
 });
-$('range').addEventListener('change', loadCharts);
+$('range').addEventListener('change', () => {
+  $('customRange').hidden = $('range').value !== 'custom';
+  saveChartPrefs();
+  loadCharts();
+});
+$('rangeFrom').addEventListener('change', () => { saveChartPrefs(); loadCharts(); });
+$('rangeTo').addEventListener('change', () => { saveChartPrefs(); loadCharts(); });
+// Dots and the average line can't both be off: the chart would be empty.
+function toggleSeries(changedId) {
+  if (!$('showDots').checked && !$('showAvg').checked) {
+    $(changedId).checked = true;
+    say('chartStatus', 'Keep at least one of Daily Dots or Average Line on.', true);
+    return;
+  }
+  saveChartPrefs();
+  renderCharts();
+}
+$('showDots').addEventListener('change', () => toggleSeries('showDots'));
+$('showAvg').addEventListener('change', () => toggleSeries('showAvg'));
 $('saveGoals').addEventListener('click', saveGoals);
-$('showGoals').addEventListener('change', renderCharts);
+$('showGoals').addEventListener('change', () => { saveChartPrefs(); renderCharts(); });
 (function initMetric() {
   const sel = $('calMetric');
   Object.keys(METRICS).forEach((k) => sel.appendChild(new Option(METRICS[k].label, k)));
@@ -1280,6 +1400,7 @@ $('saveColor').addEventListener('click', () => {
 $('autoColor').addEventListener('click', () => saveColor(null));
 
 async function init() {
+  initChartControls();
   showTab(location.hash.slice(1), false);
   if (await loadCalendar()) {
     fillPlayerFilter();
