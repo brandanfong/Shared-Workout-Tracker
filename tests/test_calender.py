@@ -33,7 +33,7 @@ def test_workout_day_needs_both_thresholds(client, auth, log):
     assert days["2026-11-02"]["brandan"]["workout"] is False
     assert days["2026-11-03"]["brandan"]["workout"] is False
     assert days["2026-11-04"]["brandan"]["workout"] is True
-    assert data["goals"]["brandan"] == {"min_minutes": 30, "min_calories": 400}
+    assert data["goals"]["brandan"] == {"min_minutes": 30, "min_calories": 400, "weekly_workouts": 2}
 
 
 def test_calendar_only_includes_requested_month(client, auth, log):
