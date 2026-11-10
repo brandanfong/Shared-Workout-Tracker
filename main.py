@@ -13,6 +13,7 @@ from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, ForeignKey,
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
+import colors
 import scoring
 
 # Tolerate stray quotes/whitespace and a plain postgresql:// prefix
@@ -43,6 +44,8 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True)
+    # Chosen display color (#rrggbb). None means "automatic".
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ApiKey(Base):
@@ -226,6 +229,15 @@ class AdjustIn(BaseModel):
 
 app = FastAPI(title="Couples Workout Tracker")
 Base.metadata.create_all(engine)  # swap for Alembic migrations later
+
+
+def migrate_user_color() -> None:
+    """create_all does not add columns to existing tables."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS color VARCHAR"))
+
+
+migrate_user_color()
 
 
 def migrate_user_settings() -> None:
@@ -412,6 +424,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
         "name": user.name,
         **goal_dict(load_goal_book(db).at(user.id, _today())),
         "scoring_enabled": SCORING_ENABLED,
+        "color": effective_colors(db)[user.name],
     }
 
 
@@ -451,6 +464,55 @@ def update_my_settings(
     row.weekly_workouts = merged.weekly_workouts
     db.commit()
     return {"name": user.name, **goal_dict(merged), "effective_from": effective_from.isoformat()}
+
+
+def effective_colors(db: Session) -> dict[str, str]:
+    """Everyone's display color: the one they picked, else an automatic one
+    based on their position by name."""
+    users = db.execute(select(User.name, User.color).order_by(User.name)).all()
+    palette = colors.DEFAULT_PALETTE
+    return {u.name: u.color or palette[i % len(palette)] for i, u in enumerate(users)}
+
+
+class ColorIn(BaseModel):
+    color: str | None = None  # null goes back to the automatic color
+
+
+@app.get("/api/colors")
+def color_options(user: User = Depends(current_user), db: Session = Depends(get_session)):
+    """Preset swatches, which of them are still free, and your current color."""
+    current = effective_colors(db)
+    others = {n: c for n, c in current.items() if n != user.name}
+    return {
+        "mine": current[user.name],
+        "custom": user.color is not None,
+        "presets": [
+            {"color": c, "available": colors.check(c, others) is None} for c in colors.PRESETS
+        ],
+    }
+
+
+@app.patch("/api/me/color")
+def set_my_color(
+    body: ColorIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    """Pick your color (any #rrggbb that passes the checks) or send null to go
+    back to the automatic one."""
+    if body.color is None:
+        user.color = None
+    else:
+        color = colors.normalize(body.color)
+        if color is None:
+            raise HTTPException(status_code=422, detail="Colors look like #3b82f6.")
+        others = {n: c for n, c in effective_colors(db).items() if n != user.name}
+        problem = colors.check(color, others)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
+        user.color = color
+    db.commit()
+    return {"color": effective_colors(db)[user.name], "custom": user.color is not None}
 
 
 @app.get("/api/activity", dependencies=[Depends(current_user)])
@@ -512,12 +574,17 @@ def calendar_month(
             "exercise_minutes": r.exercise_minutes,
             "active_calories": r.active_calories,
             "workout": scoring.is_workout_day(r.exercise_minutes, r.active_calories, g),
+            # The two halves of a workout day, so the calendar can show partial days.
+            "calorie_hit": r.active_calories >= g.min_calories,
+            "minutes_hit": r.exercise_minutes >= g.min_minutes,
         }
 
     return {
         "month": month,
         "users": users,
         "goals": goals,
+        "colors": effective_colors(db),
+        "everyone_color": colors.EVERYONE_COLOR,
         "days": days,
     }
 

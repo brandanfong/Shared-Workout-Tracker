@@ -23,6 +23,8 @@
   main { max-width: 1200px; margin: 0 auto; }
   #tab-rewards, #tab-settings { max-width: 900px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  .titlebar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .titlebar h1 { margin: 0; }
   h2 { font-size: 1rem; margin: 0; }
   select, input[type=password], input[type=number], input[type=text], button {
     font: inherit; padding: 6px 10px; border-radius: 8px;
@@ -35,6 +37,9 @@
   .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
   .muted { color: var(--muted); font-size: 0.85rem; }
   .status { color: var(--muted); font-size: 0.9rem; min-height: 1.2em; margin-bottom: 8px; }
+  .status.error { color: #dc2626; font-weight: 600; }
+  input.invalid { border-color: #dc2626 !important; box-shadow: 0 0 0 1px #dc2626; }
+  @media (prefers-color-scheme: dark) { .status.error { color: #f87171; } input.invalid { border-color: #f87171 !important; box-shadow: 0 0 0 1px #f87171; } }
   #auth { display: none; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   a.link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 0.85rem; }
 
@@ -48,12 +53,39 @@
     padding: 4px 6px; font-size: 0.8rem; cursor: pointer; background: transparent;
   }
   .cell.blank { border: none; cursor: default; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+  .swatch { width: 34px; height: 34px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }
+  .swatch.selected { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--fg); }
+  .swatch:disabled { opacity: 0.25; cursor: not-allowed; }
+  .custom-color { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  .custom-color label { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
+  .custom-color input[type=color] { width: 40px; height: 32px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: none; }
+  .custom-color input[type=text] { width: 100px; }
+  .badge.soft { background: transparent; color: var(--fg); border: 1px solid var(--muted); }
   .cell.filled { color: #fff; font-weight: 700; border-color: transparent; }
+  .cell { position: relative; }
+  .star { position: absolute; top: 1px; right: 4px; font-size: 0.85rem; line-height: 1; color: #f5b301; text-shadow: 0 0 2px rgba(0,0,0,0.55); pointer-events: none; }
   .cell.today { outline: 2px solid var(--accent); outline-offset: 1px; }
   .cell.future { opacity: 0.4; }
+  /* Selected day: a solid inner ring, so it reads differently from today's outer outline. */
+  .cell.selected { box-shadow: inset 0 0 0 3px var(--fg); font-weight: 700; }
   .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 0.9rem; }
+  .goal-box { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .goal-title { font-weight: 600; font-size: 0.9rem; }
+  .goal-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.9rem; }
+  .goal-row .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .goal-row .goal-vals { color: var(--muted); margin-left: auto; white-space: pre; }
+  .legend .person { cursor: pointer; user-select: none; touch-action: manipulation; }
+  .legend .person.off { opacity: 0.4; text-decoration: line-through; }
+  .star-legend { color: #f5b301; margin-right: 6px; text-shadow: 0 0 1px rgba(0,0,0,0.5); }
   .legend span.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-  #dayDetail { margin-top: 10px; font-size: 0.85rem; color: var(--muted); white-space: pre-line; min-height: 2.4em; }
+  #dayDetail { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.9rem; min-height: 3.6em; }
+  #dayDetail .placeholder { color: var(--muted); }
+  .detail-title { font-weight: 600; margin-bottom: 6px; }
+  .detail-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .detail-row .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .detail-row .vals { color: var(--muted); }
+  .badge { font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--accent); color: #fff; }
   .chart-wrap { position: relative; height: 280px; }
   .goal-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
   .goal-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
@@ -101,7 +133,10 @@
 </head>
 <body>
 <main>
-  <h1>Workout Tracker</h1>
+  <div class="titlebar">
+    <h1>Workout Tracker</h1>
+    <span class="muted" id="whoami"></span>
+  </div>
 
   <div id="auth">
     <input id="keyInput" type="password" placeholder="API key" autocomplete="off">
@@ -134,7 +169,8 @@
       </div>
       <div class="cal-grid" id="calGrid"></div>
       <div class="legend" id="legend"></div>
-      <div class="muted" id="threshold" style="margin-top:8px"></div>
+      <div class="muted" style="margin-top:6px">Tap a name to show or hide that person. Double-tap to show only them, and again to show everyone.</div>
+      <div class="goal-box" id="threshold"></div>
       <div id="dayDetail">Tap a day for details.</div>
     </div>
   </div>
@@ -154,7 +190,7 @@
         <label style="margin-left:10px"><input type="checkbox" id="showGoals" checked> Goal lines</label>
       </div>
     </div>
-    <div class="muted" style="margin-bottom:8px">Dots are daily values (filled = met your goal, hollow = below it). Bold line = 7-day average, dashed = goal. You are shown by default; tap a name to show or hide someone.</div>
+    <div class="muted" style="margin-bottom:8px">Dots are daily values (filled = met your goal, hollow = below it). Bold line = 7-day average, dashed = goal. You are shown by default; tap a name to show or hide someone, or double-tap to show only them.</div>
     <div class="status" id="chartStatus"></div>
     <h2 style="margin:8px 0">Exercise minutes</h2>
     <div class="chart-wrap"><canvas id="minutesChart"></canvas></div>
@@ -220,8 +256,24 @@
   </div>
 
   <div class="card">
+    <div class="card-head"><h2>My color</h2></div>
+    <div class="muted" style="margin-bottom:10px">Shown on the calendar and charts. Pick a swatch, or choose any color.</div>
+    <div class="swatches" id="swatches"></div>
+    <div class="custom-color">
+      <label>Custom
+        <input type="color" id="colorPicker" value="#3b82f6">
+      </label>
+      <input type="text" id="colorHex" maxlength="7" placeholder="#3b82f6" aria-label="Hex color">
+      <button id="saveColor">Use this color</button>
+      <a class="link" id="autoColor">Use automatic color</a>
+    </div>
+    <div class="status" id="colorStatus" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
     <div class="card-head"><h2>API key</h2></div>
     <div class="muted" style="margin-bottom:8px">This device stores your key so you stay signed in.</div>
+    <div class="muted" id="keyOwner" style="margin-bottom:8px"></div>
     <button id="changeKey">Change key</button>
   </div>
   </section>
@@ -270,10 +322,9 @@
 <script>
 const KEY_STORAGE = 'wt_key';
 const PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#ec4899', '#eab308', '#14b8a6'];
-const ALL_COLOR = '#10b981';
 const charts = {};
 let USERS = [];
-let cal = { days: {}, users: [], goals: {} };
+let cal = { days: {}, users: [], goals: {}, colors: {}, everyone_color: '#16a34a' };
 const now = new Date();
 let viewY = now.getFullYear();
 let viewM = now.getMonth() + 1;
@@ -286,7 +337,7 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 
 function getKey() { try { return localStorage.getItem(KEY_STORAGE) || ''; } catch (e) { return ''; } }
 function setKey(k) { try { localStorage.setItem(KEY_STORAGE, k); } catch (e) {} }
-function clearKey() { try { localStorage.removeItem(KEY_STORAGE); } catch (e) {} }
+function clearKey() { try { localStorage.removeItem(KEY_STORAGE); } catch (e) {} const w = document.getElementById('whoami'); if (w) w.textContent = ''; }
 
 function todayStr() {
   const d = new Date();
@@ -294,6 +345,7 @@ function todayStr() {
 }
 function monthStr() { return viewY + '-' + pad(viewM); }
 function colorOf(name) {
+  if (cal.colors && cal.colors[name]) return cal.colors[name];
   const i = USERS.indexOf(name);
   return PALETTE[(i >= 0 ? i : USERS.length) % PALETTE.length];
 }
@@ -314,24 +366,72 @@ async function apiGet(path) {
 
 /* ---------- Calendar ---------- */
 
+// Boundaries (in % along a corner-to-corner diagonal) that give n colors the SAME
+// area. A diagonal sweep covers a square unevenly (the corners are small), so
+// equal steps would make the middle color look biggest.
+function equalAreaStops(n) {
+  const out = [0];
+  for (let k = 1; k < n; k++) {
+    const f = k / n;
+    const t = f <= 0.5 ? Math.sqrt(f / 2) : 1 - Math.sqrt((1 - f) / 2);
+    out.push(t * 100);
+  }
+  out.push(100);
+  return out;
+}
+
 function cellBackground(did) {
   const n = USERS.length;
   if (!did.length) return '';
-  if (n > 1 && did.length === n) return ALL_COLOR;
+  if (n > 1 && did.length === n) return cal.everyone_color;
   if (did.length === 1) return colorOf(did[0]);
-  const step = 100 / did.length;
-  const stops = did.map((u, i) => colorOf(u) + ' ' + (i * step) + '% ' + ((i + 1) * step) + '%');
+  const b = equalAreaStops(did.length);
+  const stops = did.map((u, i) => colorOf(u) + ' ' + b[i].toFixed(1) + '% ' + b[i + 1].toFixed(1) + '%');
   return 'linear-gradient(135deg, ' + stops.join(', ') + ')';
 }
 
+let selectedIso = null;
+
 function showDetail(iso, entry) {
-  const lines = USERS.map((u) => {
-    const e = entry[u];
-    if (!e) return cap(u) + ': no data';
-    return cap(u) + ': ' + e.exercise_minutes + ' min, ' + e.active_calories + ' cal' + (e.workout ? ' (workout day)' : '');
+  selectedIso = iso;
+  document.querySelectorAll('#calGrid .cell.selected').forEach((c) => c.classList.remove('selected'));
+  const cellEl = document.querySelector('#calGrid .cell[data-iso="' + iso + '"]');
+  if (cellEl) cellEl.classList.add('selected');
+
+  const box = $('dayDetail');
+  box.innerHTML = '';
+  const when = new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
-  $('dayDetail').textContent = iso + '\n' + lines.join('\n');
+  const everyone = USERS.length > 1 && USERS.every((u) => entry[u] && entry[u].workout);
+  box.appendChild(el('div', 'detail-title', (everyone ? '\u2605 ' : '') + when));
+  USERS.forEach((u) => {
+    const e = entry[u];
+    const row = el('div', 'detail-row');
+    const dot = el('span', 'sw');
+    dot.style.background = colorOf(u);
+    row.appendChild(dot);
+    row.appendChild(el('strong', null, cap(u)));
+    if (!e) {
+      row.appendChild(el('span', 'vals', 'no data'));
+    } else {
+      row.appendChild(el('span', 'vals', e.exercise_minutes + ' min  ·  ' + e.active_calories + ' cal'));
+      if (e.workout) row.appendChild(el('span', 'badge', 'Workout day'));
+      else if (e.calorie_hit) row.appendChild(el('span', 'badge soft', 'Active day (calories only)'));
+      else if (e.minutes_hit) row.appendChild(el('span', 'badge soft', 'Minutes only'));
+    }
+    box.appendChild(row);
+  });
 }
+
+function resetDetail() {
+  selectedIso = null;
+  $('dayDetail').innerHTML = '';
+  $('dayDetail').appendChild(el('div', 'placeholder', 'Tap a day for details.'));
+}
+
+// People hidden on the calendar by tapping their name in the legend (this page load only).
+const calHidden = new Set();
 
 function renderCalendar() {
   const y = viewY, m = viewM;
@@ -367,9 +467,14 @@ function renderCalendar() {
   for (let d = 1; d <= dim; d++) {
     const iso = y + '-' + pad(m) + '-' + pad(d);
     const entry = cal.days[iso] || {};
-    const did = USERS.filter((u) => entry[u] && entry[u].workout);
-    did.forEach((u) => { counts[u]++; });
-    if (n > 1 && did.length === n) allCount++;
+    const didAll = USERS.filter((u) => entry[u] && entry[u].workout);
+    didAll.forEach((u) => { counts[u]++; });
+    const everyoneDid = n > 1 && didAll.length === n;
+    if (everyoneDid) allCount++;
+    // Hidden people are left out of the cell. The shared green and the star only
+    // mean "everyone" while everyone is shown.
+    const did = didAll.filter((u) => !calHidden.has(u));
+    const showEveryone = everyoneDid && calHidden.size === 0;
 
     const cell = document.createElement('div');
     cell.className = 'cell';
@@ -378,6 +483,8 @@ function renderCalendar() {
       cell.classList.add('filled');
       cell.style.background = cellBackground(did);
     }
+    cell.dataset.iso = iso;
+    if (showEveryone) cell.appendChild(el('span', 'star', '\u2605'));
     if (iso === today) cell.classList.add('today');
     if (iso > today) cell.classList.add('future');
     cell.addEventListener('click', () => showDetail(iso, entry));
@@ -387,42 +494,74 @@ function renderCalendar() {
   const legend = $('legend');
   legend.innerHTML = '';
   USERS.forEach((u) => {
-    const item = document.createElement('div');
+    const item = el('div', 'person' + (calHidden.has(u) ? ' off' : ''));
+    item.setAttribute('role', 'button');
+    item.tabIndex = 0;
+    item.setAttribute('aria-pressed', String(!calHidden.has(u)));
+    item.title = (calHidden.has(u) ? 'Tap to show ' : 'Tap to hide ') + cap(u) + '. Double-tap to show only ' + cap(u) + '.';
     const sw = document.createElement('span');
     sw.className = 'sw';
     sw.style.background = colorOf(u);
     item.appendChild(sw);
     item.appendChild(document.createTextNode(cap(u) + ': ' + counts[u]));
+    const toggle = () => legendClick(
+      'cal',
+      u,
+      () => new Set(USERS.filter((x) => !calHidden.has(x))),
+      (set) => {
+        calHidden.clear();
+        USERS.forEach((x) => { if (!set.has(x)) calHidden.add(x); });
+        renderCalendar();
+      }
+    );
+    item.addEventListener('click', toggle);
+    item.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
+    });
     legend.appendChild(item);
   });
   if (n > 1) {
     const item = document.createElement('div');
-    const sw = document.createElement('span');
-    sw.className = 'sw';
-    sw.style.background = ALL_COLOR;
-    item.appendChild(sw);
+    const star = el('span', 'star-legend', '\u2605');
+    item.appendChild(star);
     item.appendChild(document.createTextNode('Everyone: ' + allCount));
     legend.appendChild(item);
   }
-  const goalText = USERS.map((u) => {
+  // Keep the selected day highlighted (and its details shown) if it is in this month.
+  const prefix = y + '-' + pad(m) + '-';
+  if (selectedIso && selectedIso.startsWith(prefix)) showDetail(selectedIso, cal.days[selectedIso] || {});
+  else resetDetail();
+
+  // One row per person: color dot, bold name, then their goals.
+  const box = $('threshold');
+  box.innerHTML = '';
+  box.appendChild(el('div', 'goal-title', 'Workout day goals'));
+  box.appendChild(el('div', 'muted', 'A day counts when you reach both.'));
+  USERS.forEach((u) => {
     const g = cal.goals[u];
-    return cap(u) + ': ' + g.min_minutes + ' min and ' + g.min_calories + ' cal';
+    if (!g) return;
+    const row = el('div', 'goal-row');
+    const dot = el('span', 'sw');
+    dot.style.background = colorOf(u);
+    row.appendChild(dot);
+    row.appendChild(el('strong', null, cap(u)));
+    row.appendChild(el('span', 'goal-vals', g.min_minutes + ' min  ·  ' + g.min_calories + ' cal'));
+    box.appendChild(row);
   });
-  $('threshold').textContent = 'Workout day goals (both required): ' + goalText.join('  |  ');
 }
 
 async function loadCalendar() {
-  $('calStatus').textContent = 'Loading... (the server can take up to a minute to wake up)';
+  say('calStatus', 'Loading... (the server can take up to a minute to wake up)');
   try {
     const data = await apiGet('/api/calendar?month=' + monthStr());
     if (!data) return false;
     cal = data;
     USERS = data.users;
     renderCalendar();
-    $('calStatus').textContent = '';
+    say('calStatus', '');
     return true;
   } catch (e) {
-    $('calStatus').textContent = 'Could not load data. Try again in a moment.';
+    say('calStatus', 'Could not load data. Try again in a moment.', true);
     return false;
   }
 }
@@ -451,6 +590,31 @@ function rollingAvg(values, window) {
 }
 
 // Which people are drawn on the charts. null = everyone (until we know who "me" is).
+// Legend clicks, for both the calendar and the charts (same idea as Plotly):
+//   click        show or hide that person
+//   double-click show ONLY that person; double-click again to show everyone
+// There is no native double-click on a canvas legend, so two clicks on the same
+// name within a third of a second count as one.
+const LEGEND_DOUBLE_MS = 350;
+const legendLast = {};
+
+function legendClick(scope, name, current, apply) {
+  // current(): Set of people shown right now.  apply(set): show exactly these.
+  const t = Date.now();
+  const prev = legendLast[scope];
+  if (prev && prev.name === name && t - prev.t < LEGEND_DOUBLE_MS) {
+    legendLast[scope] = null;
+    const alreadyOnlyThem = prev.before.size === 1 && prev.before.has(name);
+    apply(alreadyOnlyThem ? new Set(USERS) : new Set([name]));
+    return;
+  }
+  const before = new Set(current());
+  legendLast[scope] = { name, t, before };
+  const next = new Set(before);
+  if (next.has(name)) next.delete(name); else next.add(name);
+  apply(next);
+}
+
 let visiblePeople = null;
 function isShown(name) { return visiblePeople === null || visiblePeople.has(name); }
 
@@ -566,7 +730,12 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
               return;
             }
             // A person's name toggles their line, dots and goal line, on every chart.
-            setPersonShown(d._person, !isShown(d._person));
+            legendClick(
+              'charts',
+              d._person,
+              () => (visiblePeople === null ? new Set(USERS) : new Set(visiblePeople)),
+              (set) => { USERS.forEach((u) => setPersonShown(u, set.has(u))); }
+            );
           },
         },
         tooltip: {
@@ -595,7 +764,7 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
 
 function renderCharts() {
   const showGoalLines = $('showGoals').checked;
-  $('chartStatus').textContent = chartRows.length ? '' : 'No data in this range yet.';
+  say('chartStatus', chartRows.length ? '' : 'No data in this range yet.');
   buildChart('minutesChart', 'exercise_minutes', 'min_minutes', chartRows, showGoalLines);
   buildChart('caloriesChart', 'active_calories', 'min_calories', chartRows, showGoalLines);
 }
@@ -607,7 +776,7 @@ async function loadCharts() {
     chartRows = data;
     renderCharts();
   } catch (e) {
-    $('chartStatus').textContent = 'Could not load chart data. Try again in a moment.';
+    say('chartStatus', 'Could not load chart data. Try again in a moment.', true);
   }
 }
 
@@ -622,8 +791,10 @@ async function loadMe() {
     $('goalCalories').value = me.min_calories;
     $('goalWeekly').value = me.weekly_workouts;
     $('pausedBanner').hidden = !!me.scoring_enabled;
+    $('whoami').textContent = 'Signed in as ' + cap(me.name);
+    $('keyOwner').textContent = 'This device is signed in as ' + cap(me.name) + '.';
   } catch (e) {
-    $('goalStatus').textContent = 'Could not load your goals.';
+    say('goalStatus', 'Could not load your goals.', true);
   }
 }
 
@@ -632,10 +803,10 @@ async function saveGoals() {
   const cals = parseInt($('goalCalories').value, 10);
   const weekly = parseInt($('goalWeekly').value, 10);
   if (!(mins >= 1 && mins <= 1440) || !(cals >= 1 && cals <= 20000) || !(weekly >= 1 && weekly <= 7)) {
-    $('goalStatus').textContent = 'Enter minutes (1 to 1440), calories (1 to 20000) and workouts per week (1 to 7).';
+    say('goalStatus', 'Enter minutes (1 to 1440), calories (1 to 20000) and workouts per week (1 to 7).', true);
     return;
   }
-  $('goalStatus').textContent = 'Saving...';
+  say('goalStatus', 'Saving...');
   try {
     const res = await fetch('/api/me/settings', {
       method: 'PATCH',
@@ -648,7 +819,7 @@ async function saveGoals() {
     await loadCalendar();
     renderCharts();
   } catch (e) {
-    $('goalStatus').textContent = 'Could not save. Try again in a moment.';
+    say('goalStatus', 'Could not save. Try again in a moment.', true);
   }
 }
 
@@ -675,6 +846,13 @@ function errText(r) {
   if (typeof d === 'string') return d;
   if (Array.isArray(d) && d.length) return d[0].msg || 'Invalid input.';
   return 'Something went wrong. Try again.';
+}
+
+// Show a status message. Errors are red; any new message replaces the old one.
+function say(id, msg, isError) {
+  const e = $(id);
+  e.textContent = msg;
+  e.classList.toggle('error', !!isError && !!msg);
 }
 
 function el(tag, cls, text) {
@@ -746,19 +924,19 @@ async function loadStore() {
     if (!data) return;
     rewards = data;
     renderRewards(balance);
-    $('storeStatus').textContent = '';
+    say('storeStatus', '');
   } catch (e) {
-    $('storeStatus').textContent = 'Could not load rewards. Try again in a moment.';
+    say('storeStatus', 'Could not load rewards. Try again in a moment.', true);
   }
 }
 
 async function redeemReward(r) {
   if (!confirm('Redeem "' + r.name + '" for ' + r.cost + ' points?')) return;
-  $('storeStatus').textContent = 'Redeeming...';
+  say('storeStatus', 'Redeeming...');
   const res = await apiSend('POST', '/api/rewards/' + r.id + '/redeem');
-  $('storeStatus').textContent = res.ok ? 'Redeemed "' + r.name + '". Enjoy!' : errText(res);
+  say('storeStatus', res.ok ? 'Redeemed "' + r.name + '". Enjoy!' : errText(res), !res.ok);
   await Promise.all([loadStore(), loadLedger()]);
-  if (res.ok) $('storeStatus').textContent = 'Redeemed "' + r.name + '". Enjoy!';
+  if (res.ok) say('storeStatus', 'Redeemed "' + r.name + '". Enjoy!');
 }
 
 let editingId = null;
@@ -770,7 +948,7 @@ function openRewardDialog(r) {
   $('rwCost').value = r ? r.cost : '';
   $('rwCooldown').value = r ? r.cooldown_days : 0;
   $('rwRepeatable').checked = r ? r.repeatable : true;
-  $('rewardDialogStatus').textContent = '';
+  say('rewardDialogStatus', '');
   $('rewardDialog').showModal();
   $('rwName').focus();
 }
@@ -788,23 +966,23 @@ async function saveReward(ev) {
     ? await apiSend('POST', '/api/rewards', body)
     : await apiSend('PATCH', '/api/rewards/' + editingId, body);
   $('rwSave').disabled = false;
-  if (!res.ok) { $('rewardDialogStatus').textContent = errText(res); return; }
+  if (!res.ok) { say('rewardDialogStatus', errText(res), true); return; }
   $('rewardDialog').close();
-  $('storeStatus').textContent = (editingId === null ? 'Added "' : 'Updated "') + res.data.name + '".';
+  say('storeStatus', (editingId === null ? 'Added "' : 'Updated "') + res.data.name + '".');
   await loadStore();
 }
 
 async function removeReward(r) {
   if (!confirm('Remove "' + r.name + '" from the menu? Past redemptions stay in the history.')) return;
   const res = await apiSend('PATCH', '/api/rewards/' + r.id, { active: false });
-  $('storeStatus').textContent = res.ok ? '' : errText(res);
+  say('storeStatus', res.ok ? '' : errText(res), !res.ok);
   await loadStore();
 }
 
 function openAdjustDialog() {
   $('adjPoints').value = '';
   $('adjNote').value = '';
-  $('adjustDialogStatus').textContent = '';
+  say('adjustDialogStatus', '');
   $('adjustDialog').showModal();
   $('adjPoints').focus();
 }
@@ -812,9 +990,9 @@ function openAdjustDialog() {
 async function postAdjust(ev) {
   ev.preventDefault();
   const points = parseInt($('adjPoints').value, 10);
-  if (!points) { $('adjustDialogStatus').textContent = 'Enter a whole number other than 0.'; return; }
+  if (!points) { say('adjustDialogStatus', 'Enter a whole number other than 0.', true); return; }
   const res = await apiSend('POST', '/api/adjust', { points, note: $('adjNote').value.trim() });
-  if (!res.ok) { $('adjustDialogStatus').textContent = errText(res); return; }
+  if (!res.ok) { say('adjustDialogStatus', errText(res), true); return; }
   $('adjustDialog').close();
   await Promise.all([loadStore(), loadLedger()]);
 }
@@ -847,9 +1025,9 @@ async function loadLedger() {
       tr.appendChild(el('td', 'num', String(e.balance_after)));
       body.appendChild(tr);
     });
-    $('ledgerStatus').textContent = rows.length ? '' : 'No entries yet.';
+    say('ledgerStatus', rows.length ? '' : 'No entries yet.');
   } catch (e) {
-    $('ledgerStatus').textContent = 'Could not load history. Try again in a moment.';
+    say('ledgerStatus', 'Could not load history. Try again in a moment.', true);
   }
 }
 
@@ -860,6 +1038,41 @@ function fillPlayerFilter() {
   sel.appendChild(new Option('Everyone', ''));
   USERS.forEach((u) => sel.appendChild(new Option(cap(u), u)));
   sel.value = USERS.includes(current) ? current : '';
+}
+
+/* ---------- My color ---------- */
+
+async function loadColors() {
+  try {
+    const data = await apiGet('/api/colors');
+    if (!data) return;
+    const box = $('swatches');
+    box.innerHTML = '';
+    data.presets.forEach((p) => {
+      const b = el('button', 'swatch' + (p.color === data.mine ? ' selected' : ''));
+      b.type = 'button';
+      b.style.background = p.color;
+      b.disabled = !p.available && p.color !== data.mine;
+      b.title = b.disabled ? 'Too close to someone else\'s color' : p.color;
+      b.setAttribute('aria-label', p.color);
+      b.addEventListener('click', () => saveColor(p.color));
+      box.appendChild(b);
+    });
+    $('colorPicker').value = data.mine;
+    $('colorHex').value = data.mine;
+  } catch (e) {
+    say('colorStatus', 'Could not load colors. Try again in a moment.', true);
+  }
+}
+
+async function saveColor(color) {
+  say('colorStatus', 'Saving...');
+  const res = await apiSend('PATCH', '/api/me/color', { color });
+  if (!res.ok) { say('colorStatus', errText(res), true); return; }
+  say('colorStatus', color === null ? 'Back to your automatic color.' : 'Saved.');
+  await loadCalendar();
+  await loadColors();
+  renderCharts();
 }
 
 /* ---------- Tabs ---------- */
@@ -916,13 +1129,32 @@ window.addEventListener('hashchange', () => showTab(location.hash.slice(1), fals
 $('ledgerPlayer').addEventListener('change', loadLedger);
 $('ledgerType').addEventListener('change', loadLedger);
 $('adjustLink').addEventListener('click', openAdjustDialog);
+$('colorPicker').addEventListener('input', () => {
+  $('colorHex').value = $('colorPicker').value;
+  $('colorHex').classList.remove('invalid');
+  say('colorStatus', '');
+});
+$('colorHex').addEventListener('input', () => {
+  const v = $('colorHex').value.trim();
+  const ok = /^#[0-9a-fA-F]{6}$/.test(v);
+  if (ok) $('colorPicker').value = v;
+  // Red outline and message as soon as what you typed is not a color yet.
+  $('colorHex').classList.toggle('invalid', v !== '' && !ok);
+  say('colorStatus', v !== '' && !ok ? 'Colors look like #3b82f6 (a # and six letters or numbers).' : '', v !== '' && !ok);
+});
+$('saveColor').addEventListener('click', () => {
+  const v = $('colorHex').value.trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(v)) { say('colorStatus', 'Colors look like #3b82f6.', true); return; }
+  saveColor(v);
+});
+$('autoColor').addEventListener('click', () => saveColor(null));
 
 async function init() {
   showTab(location.hash.slice(1), false);
   if (await loadCalendar()) {
     fillPlayerFilter();
     await loadMe();
-    await Promise.all([loadStore(), loadLedger()]);
+    await Promise.all([loadStore(), loadLedger(), loadColors()]);
     await loadCharts();
   }
 }

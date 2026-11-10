@@ -79,3 +79,19 @@ def test_activity_respects_days_window(client, auth, log):
     data = client.get("/api/activity?days=7", headers=auth).json()
     assert [r["date"] for r in data] == [today.isoformat()]
     assert data[0]["name"] == "brandan"
+
+def test_calendar_marks_partial_days(client, headers, log):
+    # defaults: 30 min and 400 cal. A workout day needs both.
+    log(as_user="brandan", date="2026-11-02", minutes=45, calories=500)   # both
+    log(as_user="brandan", date="2026-11-03", minutes=10, calories=500)   # calories only
+    log(as_user="brandan", date="2026-11-04", minutes=45, calories=100)   # minutes only
+    log(as_user="brandan", date="2026-11-05", minutes=10, calories=100)   # neither
+    days = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()["days"]
+    flags = {d: (v["brandan"]["workout"], v["brandan"]["calorie_hit"], v["brandan"]["minutes_hit"])
+             for d, v in days.items()}
+    assert flags == {
+        "2026-11-02": (True, True, True),
+        "2026-11-03": (False, True, False),
+        "2026-11-04": (False, False, True),
+        "2026-11-05": (False, False, False),
+    }

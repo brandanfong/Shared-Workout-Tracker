@@ -5,7 +5,8 @@ def test_me_returns_default_goals(client, auth):
     r = client.get("/api/me", headers=auth)
     assert r.status_code == 200
     assert r.json() == {"name": "brandan", "min_minutes": 30, "min_calories": 400,
-                        "weekly_workouts": 2, "scoring_enabled": True}
+                        "weekly_workouts": 2, "scoring_enabled": True,
+                        "color": "#3b82f6"}
 
 
 def test_me_requires_key(client):
@@ -94,3 +95,69 @@ def test_me_reports_when_scoring_is_paused(client, auth, monkeypatch):
     import main
     monkeypatch.setattr(main, "SCORING_ENABLED", False)
     assert client.get("/api/me", headers=auth).json()["scoring_enabled"] is False
+
+
+# ---------- colors ----------
+
+
+def test_default_colors_are_automatic_and_distinct(client, headers):
+    headers("brandan")
+    headers("sam")
+    data = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()
+    assert data["colors"]["brandan"] != data["colors"]["sam"]
+    me = client.get("/api/me", headers=headers("brandan")).json()
+    assert me["color"] == data["colors"]["brandan"]
+
+
+def test_pick_a_color_and_it_shows_everywhere(client, headers):
+    headers("sam")
+    r = client.patch("/api/me/color", json={"color": "#EF4444"}, headers=headers("brandan"))
+    assert r.status_code == 200 and r.json() == {"color": "#ef4444", "custom": True}
+    data = client.get("/api/calendar?month=2026-11", headers=headers("sam")).json()
+    assert data["colors"]["brandan"] == "#ef4444"
+
+
+def test_color_can_go_back_to_automatic(client, headers):
+    client.patch("/api/me/color", json={"color": "#ef4444"}, headers=headers("brandan"))
+    r = client.patch("/api/me/color", json={"color": None}, headers=headers("brandan"))
+    assert r.json()["custom"] is False and r.json()["color"] != "#ef4444"
+
+
+@pytest.mark.parametrize("bad", ["red", "#12", "#808080", "#ffd0d0", "#200040"])
+def test_bad_colors_rejected(client, auth, bad):
+    r = client.patch("/api/me/color", json={"color": bad}, headers=auth)
+    assert r.status_code == 422 and r.json()["detail"]
+
+
+def test_cannot_pick_a_color_too_close_to_someone_else(client, headers):
+    client.patch("/api/me/color", json={"color": "#3b82f6"}, headers=headers("brandan"))
+    r = client.patch("/api/me/color", json={"color": "#3c83f6"}, headers=headers("sam"))
+    assert r.status_code == 422 and "Brandan" in r.json()["detail"]
+    # the same person can re-save their own color
+    assert client.patch("/api/me/color", json={"color": "#3b82f6"},
+                        headers=headers("brandan")).status_code == 200
+
+
+def test_color_options_mark_taken_swatches_unavailable(client, headers):
+    client.patch("/api/me/color", json={"color": "#3b82f6"}, headers=headers("brandan"))
+    opts = client.get("/api/colors", headers=headers("sam")).json()
+    by = {p["color"]: p["available"] for p in opts["presets"]}
+    assert by["#3b82f6"] is False and by["#f97316"] is True
+    mine = client.get("/api/colors", headers=headers("brandan")).json()
+    assert {p["color"]: p["available"] for p in mine["presets"]}["#3b82f6"] is True
+
+
+def test_color_endpoints_require_a_key(client):
+    assert client.get("/api/colors").status_code == 401
+    assert client.patch("/api/me/color", json={"color": "#ef4444"}).status_code == 401
+
+
+def test_calendar_sends_the_everyone_color(client, headers):
+    import colors
+    data = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()
+    assert data["everyone_color"] == colors.EVERYONE_COLOR
+
+
+def test_cannot_pick_the_everyone_color(client, auth):
+    r = client.patch("/api/me/color", json={"color": "#16a34a"}, headers=auth)
+    assert r.status_code == 422 and "everyone" in r.json()["detail"]
