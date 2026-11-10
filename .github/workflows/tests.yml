@@ -21,7 +21,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      TEST_DATABASE_URL: postgresql+psycopg://neondb_owner:npg_cg3y4KIMhUNA@ep-lingering-sunset-akadl4cj-pooler.c-3.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      TEST_DATABASE_URL: postgresql+psycopg://test:test@localhost:5432/test_db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
