@@ -20,10 +20,11 @@
     margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  main { max-width: 900px; margin: 0 auto; }
+  main { max-width: 1200px; margin: 0 auto; }
+  #tab-rewards, #tab-settings { max-width: 900px; margin: 0 auto; }
   h1 { font-size: 1.4rem; margin: 0 0 12px; }
   h2 { font-size: 1rem; margin: 0; }
-  select, input[type=password], input[type=number], button {
+  select, input[type=password], input[type=number], input[type=text], button {
     font: inherit; padding: 6px 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--card); color: var(--fg);
   }
@@ -57,6 +58,45 @@
   .goal-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
   .goal-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
   .goal-form input[type=number] { width: 150px; }
+
+  input[type=text] { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+  .balance { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .balance .big { font-size: 2.2rem; font-weight: 700; line-height: 1; }
+  .reward { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .reward:first-child { border-top: none; }
+  .reward .info { flex: 1 1 200px; min-width: 0; }
+  .reward .name { font-weight: 600; }
+  .reward .actions { display: flex; gap: 8px; align-items: center; }
+  .cost { font-weight: 700; white-space: nowrap; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+  .table-wrap { overflow-x: auto; }
+  table.ledger { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  table.ledger th, table.ledger td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); white-space: nowrap; }
+  table.ledger th { color: var(--muted); font-weight: 600; border-top: none; }
+  table.ledger td.num, table.ledger th.num { text-align: right; }
+  .banner { background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 0.9rem; }
+  @media (prefers-color-scheme: dark) { .banner { background: #451a03; color: #fde68a; border-color: #b45309; } }
+  .pos { color: #059669; } .neg { color: #dc2626; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); font-weight: 600; }
+  .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  /* Side by side on wide screens; stacked on tablets and phones. min-width: 0
+     lets the charts shrink with their column instead of overflowing. */
+  .dash { display: grid; gap: 16px; align-items: start; }
+  .dash > .card { min-width: 0; margin-bottom: 0; }
+  @media (min-width: 1000px) {
+    .dash { grid-template-columns: minmax(340px, 440px) minmax(0, 1fr); }
+  }
+  .tab-panel.active { display: block; }
+  dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--fg); padding: 18px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+  dialog form { display: flex; flex-direction: column; gap: 12px; }
+  dialog h2 { font-size: 1.1rem; }
+  dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+  dialog label.row { flex-direction: row; align-items: center; gap: 8px; }
+  dialog input[type=text], dialog input[type=number] { width: 100%; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
@@ -66,12 +106,24 @@
   <div id="auth">
     <input id="keyInput" type="password" placeholder="API key" autocomplete="off">
     <button class="primary" id="saveKey">Save</button>
+    <span class="muted" id="authMsg"></span>
   </div>
 
+  <div class="banner" id="pausedBanner" hidden>
+    <strong>Scoring is paused.</strong> Your activity is still being saved, but no points are being earned yet.
+  </div>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button role="tab" data-tab="dashboard">Dashboard</button>
+    <button role="tab" data-tab="rewards">Rewards</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <section id="tab-dashboard" class="tab-panel">
+  <div class="dash">
   <div class="card">
     <div class="card-head">
       <h2>Calendar</h2>
-      <a class="link" id="changeKey">Change key</a>
     </div>
     <div class="status" id="calStatus"></div>
     <div class="cal">
@@ -85,21 +137,6 @@
       <div class="muted" id="threshold" style="margin-top:8px"></div>
       <div id="dayDetail">Tap a day for details.</div>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="card-head"><h2>My goals</h2></div>
-    <div class="goal-form">
-      <label>Exercise minutes per day
-        <input type="number" id="goalMinutes" min="1" max="1440" step="1">
-      </label>
-      <label>Active calories per day
-        <input type="number" id="goalCalories" min="1" max="20000" step="1">
-      </label>
-      <button class="primary" id="saveGoals">Save</button>
-    </div>
-    <div class="muted" style="margin-top:8px">A day counts as a workout day when you hit both.</div>
-    <div class="status" id="goalStatus" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -124,6 +161,109 @@
     <h2 style="margin:16px 0 8px">Active calories</h2>
     <div class="chart-wrap"><canvas id="caloriesChart"></canvas></div>
   </div>
+  </div>
+  </section>
+
+  <section id="tab-rewards" class="tab-panel">
+  <div class="card">
+    <div class="card-head"><h2>Points &amp; rewards</h2><button class="primary" id="addRewardBtn">+ Add reward</button></div>
+    <div class="balance">
+      <span class="big" id="balanceNum">-</span>
+      <span class="muted">shared points</span>
+    </div>
+    <div class="muted" id="earnedBy" style="margin:4px 0 10px"></div>
+    <div class="status" id="storeStatus"></div>
+    <div id="rewardList"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Points history</h2>
+      <div class="filters">
+        <select id="ledgerPlayer"><option value="">Everyone</option></select>
+        <select id="ledgerType">
+          <option value="">All types</option>
+          <option value="earn">Earned</option>
+          <option value="redeem">Redeemed</option>
+          <option value="adjust">Adjustments</option>
+        </select>
+      </div>
+    </div>
+    <div class="status" id="ledgerStatus"></div>
+    <div class="table-wrap">
+      <table class="ledger">
+        <thead><tr><th>When</th><th>Who</th><th>What</th><th class="num">Points</th><th class="num">Balance</th></tr></thead>
+        <tbody id="ledgerBody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:10px"><a class="link" id="adjustLink">Fix a mistake (adjustment)</a></div>
+  </div>
+  </section>
+
+  <section id="tab-settings" class="tab-panel">
+  <div class="card">
+    <div class="card-head"><h2>My goals</h2></div>
+    <div class="goal-form">
+      <label>Exercise minutes per day
+        <input type="number" id="goalMinutes" min="1" max="1440" step="1">
+      </label>
+      <label>Active calories per day
+        <input type="number" id="goalCalories" min="1" max="20000" step="1">
+      </label>
+      <label>Workouts per week
+        <input type="number" id="goalWeekly" min="1" max="7" step="1">
+      </label>
+      <button class="primary" id="saveGoals">Save</button>
+    </div>
+    <div class="muted" style="margin-top:8px">Minutes and calories apply from the day you save, and each past day keeps the goal it was judged by. Workouts per week can be changed any time during the week and locks when the week ends on Sunday. A day counts as a workout day when you hit both the minutes and calories. Your calorie goal is also what daily points are measured against, and your weekly workouts goal is what you need for the weekly bonus and a successful week.</div>
+    <div class="status" id="goalStatus" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>API key</h2></div>
+    <div class="muted" style="margin-bottom:8px">This device stores your key so you stay signed in.</div>
+    <button id="changeKey">Change key</button>
+  </div>
+  </section>
+
+  <dialog id="rewardDialog">
+    <form method="dialog" id="rewardForm">
+      <h2 id="rewardDialogTitle">Add reward</h2>
+      <label>Name
+        <input type="text" id="rwName" maxlength="100" required>
+      </label>
+      <label>Cost (points)
+        <input type="number" id="rwCost" min="1" max="5000" step="1" required>
+      </label>
+      <label>Cooldown (days, 0 for none)
+        <input type="number" id="rwCooldown" min="0" max="365" step="1" value="0">
+      </label>
+      <label class="row"><input type="checkbox" id="rwRepeatable" checked> Can be redeemed more than once</label>
+      <div class="status" id="rewardDialogStatus"></div>
+      <div class="dialog-actions">
+        <button type="button" id="rwCancel">Cancel</button>
+        <button type="submit" class="primary" id="rwSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="adjustDialog">
+    <form method="dialog" id="adjustForm">
+      <h2>Fix a mistake</h2>
+      <div class="muted">Adds a correction to the history. Past entries are never edited.</div>
+      <label>Points (negative to remove)
+        <input type="number" id="adjPoints" step="1" required>
+      </label>
+      <label>Why? (shown in the history)
+        <input type="text" id="adjNote" maxlength="500" required>
+      </label>
+      <div class="status" id="adjustDialogStatus"></div>
+      <div class="dialog-actions">
+        <button type="button" id="adjCancel">Cancel</button>
+        <button type="submit" class="primary">Post correction</button>
+      </div>
+    </form>
+  </dialog>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -159,7 +299,7 @@ function colorOf(name) {
 }
 function showAuth(msg) {
   $('auth').style.display = 'flex';
-  $('calStatus').textContent = msg;
+  $('authMsg').textContent = msg;
 }
 
 async function apiGet(path) {
@@ -480,6 +620,8 @@ async function loadMe() {
     if (visiblePeople === null) visiblePeople = new Set([me.name]);
     $('goalMinutes').value = me.min_minutes;
     $('goalCalories').value = me.min_calories;
+    $('goalWeekly').value = me.weekly_workouts;
+    $('pausedBanner').hidden = !!me.scoring_enabled;
   } catch (e) {
     $('goalStatus').textContent = 'Could not load your goals.';
   }
@@ -488,8 +630,9 @@ async function loadMe() {
 async function saveGoals() {
   const mins = parseInt($('goalMinutes').value, 10);
   const cals = parseInt($('goalCalories').value, 10);
-  if (!(mins >= 1 && mins <= 1440) || !(cals >= 1 && cals <= 20000)) {
-    $('goalStatus').textContent = 'Enter minutes (1 to 1440) and calories (1 to 20000).';
+  const weekly = parseInt($('goalWeekly').value, 10);
+  if (!(mins >= 1 && mins <= 1440) || !(cals >= 1 && cals <= 20000) || !(weekly >= 1 && weekly <= 7)) {
+    $('goalStatus').textContent = 'Enter minutes (1 to 1440), calories (1 to 20000) and workouts per week (1 to 7).';
     return;
   }
   $('goalStatus').textContent = 'Saving...';
@@ -497,16 +640,244 @@ async function saveGoals() {
     const res = await fetch('/api/me/settings', {
       method: 'PATCH',
       headers: { 'X-API-Key': getKey(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ min_minutes: mins, min_calories: cals }),
+      body: JSON.stringify({ min_minutes: mins, min_calories: cals, weekly_workouts: weekly }),
     });
     if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return; }
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    $('goalStatus').textContent = 'Saved.';
+    await loadMe();
     await loadCalendar();
     renderCharts();
   } catch (e) {
     $('goalStatus').textContent = 'Could not save. Try again in a moment.';
   }
+}
+
+/* ---------- Points & rewards ---------- */
+
+let rewards = [];
+
+// Send a write request. Returns { ok, data } and never throws on HTTP errors,
+// so callers can show the server's message (e.g. "not enough points").
+async function apiSend(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { 'X-API-Key': getKey(), 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return { ok: false, data: null }; }
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  return { ok: res.ok, data };
+}
+
+function errText(r) {
+  const d = r.data && r.data.detail;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d) && d.length) return d[0].msg || 'Invalid input.';
+  return 'Something went wrong. Try again.';
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function fmtWhen(iso) {
+  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function cooldownNote(r) {
+  if (!r.last_redeemed_at || !r.cooldown_days) return '';
+  const ready = new Date(new Date(r.last_redeemed_at).getTime() + r.cooldown_days * 86400000);
+  return ready > new Date() ? 'Available again ' + ready.toLocaleDateString() : '';
+}
+
+async function loadBalance() {
+  const b = await apiGet('/api/balance');
+  if (!b) return null;
+  $('balanceNum').textContent = b.balance;
+  const parts = Object.keys(b.earned_by).map((n) => cap(n) + ' earned ' + b.earned_by[n]);
+  $('earnedBy').textContent = parts.join('  |  ');
+  return b.balance;
+}
+
+function renderRewards(balance) {
+  const list = $('rewardList');
+  list.innerHTML = '';
+  if (!rewards.length) { list.appendChild(el('div', 'muted', 'No rewards yet. Add one below.')); return; }
+  rewards.forEach((r) => {
+    const row = el('div', 'reward');
+    const info = el('div', 'info');
+    info.appendChild(el('div', 'name', r.name));
+    const bits = [];
+    if (!r.repeatable) bits.push(r.last_redeemed_at ? 'one-time (used)' : 'one-time');
+    if (r.cooldown_days) bits.push(r.cooldown_days + '-day cooldown');
+    if (r.added_by) bits.push('added by ' + cap(r.added_by));
+    const wait = cooldownNote(r);
+    if (wait) bits.push(wait);
+    info.appendChild(el('div', 'muted', bits.join(' · ')));
+    row.appendChild(info);
+
+    const actions = el('div', 'actions');
+    actions.appendChild(el('span', 'cost', r.cost + ' pts'));
+    const redeem = el('button', 'primary', 'Redeem');
+    const used = !r.repeatable && r.last_redeemed_at;
+    redeem.disabled = used || balance < r.cost || !!wait;
+    redeem.addEventListener('click', () => redeemReward(r));
+    actions.appendChild(redeem);
+    const edit = el('button', null, 'Edit');
+    edit.addEventListener('click', () => openRewardDialog(r));
+    actions.appendChild(edit);
+    const off = el('button', null, 'Remove');
+    off.addEventListener('click', () => removeReward(r));
+    actions.appendChild(off);
+    row.appendChild(actions);
+    list.appendChild(row);
+  });
+}
+
+async function loadStore() {
+  try {
+    const balance = await loadBalance();
+    if (balance === null) return;
+    const data = await apiGet('/api/rewards');
+    if (!data) return;
+    rewards = data;
+    renderRewards(balance);
+    $('storeStatus').textContent = '';
+  } catch (e) {
+    $('storeStatus').textContent = 'Could not load rewards. Try again in a moment.';
+  }
+}
+
+async function redeemReward(r) {
+  if (!confirm('Redeem "' + r.name + '" for ' + r.cost + ' points?')) return;
+  $('storeStatus').textContent = 'Redeeming...';
+  const res = await apiSend('POST', '/api/rewards/' + r.id + '/redeem');
+  $('storeStatus').textContent = res.ok ? 'Redeemed "' + r.name + '". Enjoy!' : errText(res);
+  await Promise.all([loadStore(), loadLedger()]);
+  if (res.ok) $('storeStatus').textContent = 'Redeemed "' + r.name + '". Enjoy!';
+}
+
+let editingId = null;
+
+function openRewardDialog(r) {
+  editingId = r ? r.id : null;
+  $('rewardDialogTitle').textContent = r ? 'Edit reward' : 'Add reward';
+  $('rwName').value = r ? r.name : '';
+  $('rwCost').value = r ? r.cost : '';
+  $('rwCooldown').value = r ? r.cooldown_days : 0;
+  $('rwRepeatable').checked = r ? r.repeatable : true;
+  $('rewardDialogStatus').textContent = '';
+  $('rewardDialog').showModal();
+  $('rwName').focus();
+}
+
+async function saveReward(ev) {
+  ev.preventDefault();
+  const body = {
+    name: $('rwName').value.trim(),
+    cost: parseInt($('rwCost').value, 10),
+    cooldown_days: parseInt($('rwCooldown').value, 10) || 0,
+    repeatable: $('rwRepeatable').checked,
+  };
+  $('rwSave').disabled = true;
+  const res = editingId === null
+    ? await apiSend('POST', '/api/rewards', body)
+    : await apiSend('PATCH', '/api/rewards/' + editingId, body);
+  $('rwSave').disabled = false;
+  if (!res.ok) { $('rewardDialogStatus').textContent = errText(res); return; }
+  $('rewardDialog').close();
+  $('storeStatus').textContent = (editingId === null ? 'Added "' : 'Updated "') + res.data.name + '".';
+  await loadStore();
+}
+
+async function removeReward(r) {
+  if (!confirm('Remove "' + r.name + '" from the menu? Past redemptions stay in the history.')) return;
+  const res = await apiSend('PATCH', '/api/rewards/' + r.id, { active: false });
+  $('storeStatus').textContent = res.ok ? '' : errText(res);
+  await loadStore();
+}
+
+function openAdjustDialog() {
+  $('adjPoints').value = '';
+  $('adjNote').value = '';
+  $('adjustDialogStatus').textContent = '';
+  $('adjustDialog').showModal();
+  $('adjPoints').focus();
+}
+
+async function postAdjust(ev) {
+  ev.preventDefault();
+  const points = parseInt($('adjPoints').value, 10);
+  if (!points) { $('adjustDialogStatus').textContent = 'Enter a whole number other than 0.'; return; }
+  const res = await apiSend('POST', '/api/adjust', { points, note: $('adjNote').value.trim() });
+  if (!res.ok) { $('adjustDialogStatus').textContent = errText(res); return; }
+  $('adjustDialog').close();
+  await Promise.all([loadStore(), loadLedger()]);
+}
+
+function whatText(e) {
+  if (e.type === 'redeem') return 'Redeemed: ' + (e.reward || e.note || '');
+  if (e.type === 'adjust') return 'Adjustment: ' + (e.note || '');
+  const label = e.category.replace(/_/g, ' ');
+  if (!e.period) return label;
+  if (e.period.startsWith('day-')) return label + ' (' + e.period.slice(4) + ')';
+  if (e.period.startsWith('wk-')) return label + ' (week of ' + e.period.slice(3) + ')';
+  return label + ' (' + e.period + ')';
+}
+
+async function loadLedger() {
+  const params = new URLSearchParams({ limit: '100' });
+  if ($('ledgerPlayer').value) params.set('player', $('ledgerPlayer').value);
+  if ($('ledgerType').value) params.set('type', $('ledgerType').value);
+  try {
+    const rows = await apiGet('/api/ledger?' + params);
+    if (!rows) return;
+    const body = $('ledgerBody');
+    body.innerHTML = '';
+    rows.forEach((e) => {
+      const tr = document.createElement('tr');
+      tr.appendChild(el('td', null, fmtWhen(e.created_at)));
+      tr.appendChild(el('td', null, cap(e.player)));
+      tr.appendChild(el('td', null, whatText(e)));
+      tr.appendChild(el('td', 'num ' + (e.points > 0 ? 'pos' : 'neg'), (e.points > 0 ? '+' : '') + e.points));
+      tr.appendChild(el('td', 'num', String(e.balance_after)));
+      body.appendChild(tr);
+    });
+    $('ledgerStatus').textContent = rows.length ? '' : 'No entries yet.';
+  } catch (e) {
+    $('ledgerStatus').textContent = 'Could not load history. Try again in a moment.';
+  }
+}
+
+function fillPlayerFilter() {
+  const sel = $('ledgerPlayer');
+  const current = sel.value;
+  sel.innerHTML = '';
+  sel.appendChild(new Option('Everyone', ''));
+  USERS.forEach((u) => sel.appendChild(new Option(cap(u), u)));
+  sel.value = USERS.includes(current) ? current : '';
+}
+
+/* ---------- Tabs ---------- */
+
+const TABS = ['dashboard', 'rewards', 'settings'];
+
+function showTab(name, updateHash = true) {
+  if (!TABS.includes(name)) name = 'dashboard';
+  TABS.forEach((t) => {
+    $('tab-' + t).classList.toggle('active', t === name);
+  });
+  document.querySelectorAll('#tabs button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+    b.setAttribute('aria-selected', b.dataset.tab === name);
+  });
+  if (updateHash && location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  // Charts drawn while hidden have no size; redraw when the tab is shown.
+  if (name === 'dashboard' && chartRows.length) renderCharts();
 }
 
 /* ---------- Wiring ---------- */
@@ -529,10 +900,29 @@ $('nextMonth').addEventListener('click', () => {
 $('range').addEventListener('change', loadCharts);
 $('saveGoals').addEventListener('click', saveGoals);
 $('showGoals').addEventListener('change', renderCharts);
+$('addRewardBtn').addEventListener('click', () => openRewardDialog(null));
+$('rewardForm').addEventListener('submit', saveReward);
+$('rwCancel').addEventListener('click', () => $('rewardDialog').close());
+$('adjustForm').addEventListener('submit', postAdjust);
+$('adjCancel').addEventListener('click', () => $('adjustDialog').close());
+// Click on the dimmed backdrop closes a dialog.
+['rewardDialog', 'adjustDialog'].forEach((id) => {
+  $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).close(); });
+});
+document.querySelectorAll('#tabs button').forEach((b) => {
+  b.addEventListener('click', () => showTab(b.dataset.tab));
+});
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1), false));
+$('ledgerPlayer').addEventListener('change', loadLedger);
+$('ledgerType').addEventListener('change', loadLedger);
+$('adjustLink').addEventListener('click', openAdjustDialog);
 
 async function init() {
+  showTab(location.hash.slice(1), false);
   if (await loadCalendar()) {
+    fillPlayerFilter();
     await loadMe();
+    await Promise.all([loadStore(), loadLedger()]);
     await loadCharts();
   }
 }

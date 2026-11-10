@@ -21,6 +21,10 @@ if _norm(TEST_URL) == _norm(os.environ.get("DATABASE_URL")):
 os.environ["DATABASE_URL"] = TEST_URL
 os.environ["MIN_WORKOUT_MINUTES"] = "30"
 os.environ["MIN_WORKOUT_CALORIES"] = "400"
+# Keep /log from scoring in unrelated tests; test_scoring.py sets its own start.
+os.environ["SCORING_START_DATE"] = "2099-01-01"
+os.environ["SCORING_ENABLED"] = "true"
+os.environ["WEEKLY_WORKOUT_GOAL"] = "2"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -34,7 +38,7 @@ def clean_db():
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE daily_activity, api_keys, user_settings, users "
+                "TRUNCATE scoring_periods, ledger, rewards, daily_activity, api_keys, user_goals, users "
                 "RESTART IDENTITY CASCADE"
             )
         )

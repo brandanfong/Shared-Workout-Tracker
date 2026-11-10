@@ -7,10 +7,13 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import (Date, DateTime, ForeignKey, Integer, String,
-                        UniqueConstraint, create_engine, func, select)
+from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, ForeignKey,
+                        Index, Integer, String, UniqueConstraint,
+                        create_engine, func, inspect, select, text)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+import scoring
 
 # Tolerate stray quotes/whitespace and a plain postgresql:// prefix
 raw_url = os.environ["DATABASE_URL"].strip().strip("'\"")
@@ -24,6 +27,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 # thresholds met. Override the defaults via env vars, no code edit.
 DEFAULT_MIN_MINUTES = int(os.getenv("MIN_WORKOUT_MINUTES", "30"))
 DEFAULT_MIN_CALORIES = int(os.getenv("MIN_WORKOUT_CALORIES", "400"))
+DEFAULT_WEEKLY_WORKOUTS = int(os.getenv("WEEKLY_WORKOUT_GOAL", "2"))
+# Nothing before this date is ever scored (backfilled history is ignored).
+SCORING_START = dt.date.fromisoformat(os.getenv("SCORING_START_DATE", "2026-11-09"))
+# Master switch. While off, nothing is scored and no points are paid; data keeps
+# being stored. Turn on with SCORING_ENABLED=true once everyone has set goals.
+SCORING_ENABLED = os.getenv("SCORING_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 class Base(DeclarativeBase):
@@ -52,14 +61,27 @@ class ApiKey(Base):
     )
 
 
-class UserSettings(Base):
-    """Per-person goals. A row exists only once someone customizes them;
-    everyone else uses the defaults above."""
+EPOCH = dt.date(1970, 1, 1)
 
-    __tablename__ = "user_settings"
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+class UserGoal(Base):
+    """History of each person's goals. A person's goals on any day are the row
+    with the latest effective_from that is on or before that day. Minutes and
+    calories are read for the exact day being judged; the weekly workout target
+    is read for the Sunday the week ended. People with no rows use the
+    defaults above."""
+
+    __tablename__ = "user_goals"
+    __table_args__ = (UniqueConstraint("user_id", "effective_from"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    effective_from: Mapped[dt.date] = mapped_column(Date)
     min_minutes: Mapped[int] = mapped_column(Integer)
     min_calories: Mapped[int] = mapped_column(Integer)
+    weekly_workouts: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class DailyActivity(Base):
@@ -71,6 +93,91 @@ class DailyActivity(Base):
     exercise_minutes: Mapped[int] = mapped_column(Integer)
     active_calories: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+COST_MIN = 1
+COST_MAX = 5000
+
+STARTER_REWARDS = [
+    # (name, cost, cooldown_days)
+    ("Coffee or dessert date", 50, 0),
+    ("Movie night, winner picks", 75, 0),
+    ("Home-cooked dinner by the other", 100, 0),
+    ("$25 gift", 200, 7),
+    ("Nice dinner out", 325, 14),
+    ("Spa day or day trip", 500, 30),
+    ("Weekend getaway fund", 1000, 60),
+]
+
+
+class Reward(Base):
+    """The prize menu. Either person can add, edit, or deactivate rewards."""
+
+    __tablename__ = "rewards"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    cost: Mapped[int] = mapped_column(Integer)
+    repeatable: Mapped[bool] = mapped_column(Boolean, default=True)
+    cooldown_days: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class LedgerEntry(Base):
+    """Append-only audit trail of every change to the shared balance.
+    Rows are never updated or deleted; mistakes are fixed with an 'adjust' row.
+    balance = SUM(points)."""
+
+    __tablename__ = "ledger"
+    __table_args__ = (
+        CheckConstraint("type in ('earn', 'redeem', 'adjust')", name="ck_ledger_type"),
+        CheckConstraint(
+            "(type = 'earn' and points > 0) or (type = 'redeem' and points < 0) "
+            "or (type = 'adjust' and points <> 0)",
+            name="ck_ledger_sign",
+        ),
+        # A re-run of a week's scoring can't double-pay: one earn per
+        # person + period + category.
+        Index(
+            "uq_ledger_earn",
+            "user_id",
+            "period",
+            "category",
+            unique=True,
+            postgresql_where=text("type = 'earn'"),
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    type: Mapped[str] = mapped_column(String)  # earn | redeem | adjust
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    period: Mapped[str | None] = mapped_column(String, nullable=True)  # wk-2026-11-02, 2026-11
+    category: Mapped[str] = mapped_column(String)  # calorie_daily, workout_day, redeem, ...
+    points: Mapped[int] = mapped_column(Integer)
+    balance_after: Mapped[int] = mapped_column(Integer)
+    reward_id: Mapped[int | None] = mapped_column(ForeignKey("rewards.id"), nullable=True)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class ScoringPeriod(Base):
+    """One row per week/month once it has been scored. A period is scored once
+    and then frozen: data that arrives later never changes points already paid.
+    Also carries the pair's streak so the next week can continue from it."""
+
+    __tablename__ = "scoring_periods"
+    period: Mapped[str] = mapped_column(String, primary_key=True)  # wk-2026-11-02 | 2026-11
+    kind: Mapped[str] = mapped_column(String)  # week | month
+    pair_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    streak: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    multiplier: Mapped[str | None] = mapped_column(String, nullable=True)
+    scored_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
@@ -94,10 +201,69 @@ class LogIn(BaseModel):
 class SettingsIn(BaseModel):
     min_minutes: int | None = Field(default=None, ge=1, le=1440)
     min_calories: int | None = Field(default=None, ge=1, le=20000)
+    weekly_workouts: int | None = Field(default=None, ge=1, le=7)
+
+
+class RewardIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    cost: int = Field(ge=COST_MIN, le=COST_MAX)
+    repeatable: bool = True
+    cooldown_days: int = Field(default=0, ge=0, le=365)
+
+
+class RewardUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    cost: int | None = Field(default=None, ge=COST_MIN, le=COST_MAX)
+    repeatable: bool | None = None
+    cooldown_days: int | None = Field(default=None, ge=0, le=365)
+    active: bool | None = None
+
+
+class AdjustIn(BaseModel):
+    points: int = Field(ge=-100000, le=100000)
+    note: str = Field(min_length=1, max_length=500)  # why, required for audit
 
 
 app = FastAPI(title="Couples Workout Tracker")
 Base.metadata.create_all(engine)  # swap for Alembic migrations later
+
+
+def migrate_user_settings() -> None:
+    """One-time: copy the old single-row-per-person user_settings into the goal
+    history as their starting version. Safe to run on every startup. The old
+    table is left in place, unused."""
+    insp = inspect(engine)
+    if not insp.has_table("user_settings"):
+        return
+    cols = {c["name"] for c in insp.get_columns("user_settings")}
+    weekly = "s.weekly_workouts" if "weekly_workouts" in cols else str(DEFAULT_WEEKLY_WORKOUTS)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO user_goals (user_id, effective_from, min_minutes, min_calories, weekly_workouts) "
+                f"SELECT s.user_id, DATE '1970-01-01', s.min_minutes, s.min_calories, {weekly} "
+                "FROM user_settings s "
+                "WHERE NOT EXISTS (SELECT 1 FROM user_goals g WHERE g.user_id = s.user_id)"
+            )
+        )
+
+
+migrate_user_settings()
+
+
+def seed_rewards() -> None:
+    """Fill the menu with the starter rewards, only if it has never had any."""
+    with Session(engine) as db:
+        if db.scalar(select(func.count()).select_from(Reward)):
+            return
+        db.add_all(
+            Reward(name=n, cost=c, cooldown_days=cd, repeatable=True)
+            for n, c, cd in STARTER_REWARDS
+        )
+        db.commit()
+
+
+seed_rewards()
 
 
 def get_session():
@@ -142,20 +308,55 @@ def current_user(
     return user
 
 
-def effective_goals(db: Session) -> dict[str, dict]:
-    """Goals for every person: their own if set, otherwise the defaults."""
-    rows = db.execute(
-        select(User.name, UserSettings.min_minutes, UserSettings.min_calories)
-        .outerjoin(UserSettings, UserSettings.user_id == User.id)
-        .order_by(User.name)
-    ).all()
+DEFAULT_GOALS = scoring.Goals(DEFAULT_MIN_MINUTES, DEFAULT_MIN_CALORIES, DEFAULT_WEEKLY_WORKOUTS)
+
+
+def goal_dict(g: scoring.Goals) -> dict:
     return {
-        r.name: {
-            "min_minutes": r.min_minutes if r.min_minutes is not None else DEFAULT_MIN_MINUTES,
-            "min_calories": r.min_calories if r.min_calories is not None else DEFAULT_MIN_CALORIES,
-        }
-        for r in rows
+        "min_minutes": g.min_minutes,
+        "min_calories": g.min_calories,
+        "weekly_workouts": g.weekly_workouts,
     }
+
+
+class GoalBook:
+    """Everyone's goals over time. at(user_id, day) is the version in force on
+    that day (the defaults if the person has none yet)."""
+
+    def __init__(self, rows: list[UserGoal]):
+        self._by_user: dict[int, list[tuple[dt.date, scoring.Goals]]] = {}
+        for r in sorted(rows, key=lambda r: r.effective_from):
+            self._by_user.setdefault(r.user_id, []).append(
+                (r.effective_from, scoring.Goals(r.min_minutes, r.min_calories, r.weekly_workouts))
+            )
+
+    def at(self, user_id: int, day: dt.date) -> scoring.Goals:
+        current = DEFAULT_GOALS
+        for effective_from, goals in self._by_user.get(user_id, []):
+            if effective_from > day:
+                break
+            current = goals
+        return current
+
+    def latest(self, user_id: int):
+        rows = self._by_user.get(user_id)
+        return rows[-1][1] if rows else None
+
+
+def load_goal_book(db: Session) -> GoalBook:
+    return GoalBook(db.scalars(select(UserGoal)).all())
+
+
+def effective_goals(db: Session, day: dt.date | None = None) -> dict[str, dict]:
+    """Goals in force today (or on `day`) for every person."""
+    day = day or _today()
+    book = load_goal_book(db)
+    users = db.execute(select(User.id, User.name).order_by(User.name)).all()
+    return {u.name: goal_dict(book.at(u.id, day)) for u in users}
+
+
+def next_monday(day: dt.date) -> dt.date:
+    return day + dt.timedelta(days=7 - day.weekday())
 
 
 @app.get("/")
@@ -197,12 +398,21 @@ def log(
     )
     db.execute(stmt)
     db.commit()
+    try:  # score any week/month that has just become ready; never fail the sync
+        run_scoring(db)
+    except Exception:
+        db.rollback()
     return {"status": "ok", "name": user.name, "date": body.date}
 
 
 @app.get("/api/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
-    return {"name": user.name, **effective_goals(db)[user.name]}
+    """Your goals as they stand today, and whether scoring is switched on."""
+    return {
+        "name": user.name,
+        **goal_dict(load_goal_book(db).at(user.id, _today())),
+        "scoring_enabled": SCORING_ENABLED,
+    }
 
 
 @app.patch("/api/me/settings")
@@ -211,24 +421,36 @@ def update_my_settings(
     user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ):
-    settings = db.get(UserSettings, user.id)
-    if settings is None:
-        settings = UserSettings(
-            user_id=user.id,
-            min_minutes=DEFAULT_MIN_MINUTES,
-            min_calories=DEFAULT_MIN_CALORIES,
+    """Saves goals. Minutes and calories apply from today; each day is judged
+    by the goals in force that day. The weekly workout target counts for the
+    whole week you save it in and locks when that week ends. Saving again the
+    same day replaces that day's entry. Your very first save replaces the
+    defaults for all time."""
+    today = _today()
+    book = load_goal_book(db)
+    base = book.latest(user.id)
+    first_save = base is None
+    base = base or DEFAULT_GOALS
+    effective_from = EPOCH if first_save else today
+
+    merged = scoring.Goals(
+        body.min_minutes if body.min_minutes is not None else base.min_minutes,
+        body.min_calories if body.min_calories is not None else base.min_calories,
+        body.weekly_workouts if body.weekly_workouts is not None else base.weekly_workouts,
+    )
+    row = db.scalar(
+        select(UserGoal).where(
+            UserGoal.user_id == user.id, UserGoal.effective_from == effective_from
         )
-        db.add(settings)
-    if body.min_minutes is not None:
-        settings.min_minutes = body.min_minutes
-    if body.min_calories is not None:
-        settings.min_calories = body.min_calories
+    )
+    if row is None:
+        row = UserGoal(user_id=user.id, effective_from=effective_from)
+        db.add(row)
+    row.min_minutes = merged.min_minutes
+    row.min_calories = merged.min_calories
+    row.weekly_workouts = merged.weekly_workouts
     db.commit()
-    return {
-        "name": user.name,
-        "min_minutes": settings.min_minutes,
-        "min_calories": settings.min_calories,
-    }
+    return {"name": user.name, **goal_dict(merged), "effective_from": effective_from.isoformat()}
 
 
 @app.get("/api/activity", dependencies=[Depends(current_user)])
@@ -270,6 +492,7 @@ def calendar_month(
     users = db.scalars(select(User.name).order_by(User.name)).all()
     rows = db.execute(
         select(
+            User.id.label("uid"),
             User.name,
             DailyActivity.date,
             DailyActivity.exercise_minutes,
@@ -279,15 +502,16 @@ def calendar_month(
         .where(DailyActivity.date >= start, DailyActivity.date < end)
     ).all()
 
-    goals = effective_goals(db)
+    goals = effective_goals(db)  # shown as the current goals
+    book = load_goal_book(db)
     days: dict[str, dict] = {}
     for r in rows:
-        g = goals[r.name]
+        # Each day is judged against the goals that applied on that day.
+        g = book.at(r.uid, r.date)
         days.setdefault(r.date.isoformat(), {})[r.name] = {
             "exercise_minutes": r.exercise_minutes,
             "active_calories": r.active_calories,
-            "workout": r.exercise_minutes >= g["min_minutes"]
-            and r.active_calories >= g["min_calories"],
+            "workout": scoring.is_workout_day(r.exercise_minutes, r.active_calories, g),
         }
 
     return {
@@ -295,4 +519,462 @@ def calendar_month(
         "users": users,
         "goals": goals,
         "days": days,
+    }
+
+# ---------------------------------------------------------------------------
+# Points ledger and rewards store
+# ---------------------------------------------------------------------------
+
+LEDGER_LOCK_KEY = 7001  # serializes ledger writes so balance_after stays correct
+
+
+def _lock_ledger(db: Session) -> None:
+    db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": LEDGER_LOCK_KEY})
+
+
+def current_balance(db: Session) -> int:
+    return int(db.scalar(select(func.coalesce(func.sum(LedgerEntry.points), 0))))
+
+
+def _append(
+    db: Session,
+    *,
+    type: str,
+    user_id: int,
+    category: str,
+    points: int,
+    period: str | None = None,
+    reward_id: int | None = None,
+    note: str | None = None,
+) -> LedgerEntry:
+    """Add one ledger row. Caller must hold the ledger lock and commit."""
+    entry = LedgerEntry(
+        type=type,
+        user_id=user_id,
+        period=period,
+        category=category,
+        points=points,
+        balance_after=current_balance(db) + points,
+        reward_id=reward_id,
+        note=note,
+    )
+    db.add(entry)
+    db.flush()
+    return entry
+
+
+def _add_earn(
+    db: Session,
+    user_id: int,
+    period: str,
+    category: str,
+    points: int,
+    note: str | None = None,
+) -> LedgerEntry | None:
+    """Add an earn row unless it is empty or already there. Caller holds the
+    ledger lock and commits."""
+    if points <= 0:
+        return None
+    exists = db.scalar(
+        select(LedgerEntry.id).where(
+            LedgerEntry.type == "earn",
+            LedgerEntry.user_id == user_id,
+            LedgerEntry.period == period,
+            LedgerEntry.category == category,
+        )
+    )
+    if exists:
+        return None
+    return _append(
+        db, type="earn", user_id=user_id, period=period,
+        category=category, points=points, note=note,
+    )
+
+
+def record_earn(
+    db: Session,
+    user_id: int,
+    period: str,
+    category: str,
+    points: int,
+    note: str | None = None,
+) -> LedgerEntry | None:
+    """Credit points once. Idempotent: a second call for the same person +
+    period + category is a no-op (returns None)."""
+    _lock_ledger(db)
+    entry = _add_earn(db, user_id, period, category, points, note)
+    if entry is None:
+        db.rollback()  # release the lock
+        return None
+    db.commit()
+    return entry
+
+
+def _entry_json(e: LedgerEntry, player: str, reward: str | None) -> dict:
+    return {
+        "id": e.id,
+        "created_at": e.created_at.isoformat(),
+        "type": e.type,
+        "player": player,
+        "period": e.period,
+        "category": e.category,
+        "points": e.points,
+        "balance_after": e.balance_after,
+        "reward_id": e.reward_id,
+        "reward": reward,
+        "note": e.note,
+    }
+
+
+def _reward_json(r: Reward, adder: str | None, last: dt.datetime | None = None) -> dict:
+    return {
+        "id": r.id,
+        "name": r.name,
+        "cost": r.cost,
+        "repeatable": r.repeatable,
+        "cooldown_days": r.cooldown_days,
+        "active": r.active,
+        "added_by": adder,
+        "last_redeemed_at": last.isoformat() if last else None,
+    }
+
+
+@app.get("/api/balance", dependencies=[Depends(current_user)])
+def balance(db: Session = Depends(get_session)):
+    per_person = db.execute(
+        select(User.name, func.coalesce(func.sum(LedgerEntry.points), 0).label("pts"))
+        .join(LedgerEntry, LedgerEntry.user_id == User.id)
+        .where(LedgerEntry.type == "earn")
+        .group_by(User.name)
+        .order_by(User.name)
+    ).all()
+    return {
+        "balance": current_balance(db),
+        "earned_by": {r.name: int(r.pts) for r in per_person},
+    }
+
+
+@app.get("/api/rewards", dependencies=[Depends(current_user)])
+def list_rewards(include_inactive: bool = False, db: Session = Depends(get_session)):
+    last = (
+        select(LedgerEntry.reward_id, func.max(LedgerEntry.created_at).label("at"))
+        .where(LedgerEntry.type == "redeem")
+        .group_by(LedgerEntry.reward_id)
+        .subquery()
+    )
+    q = (
+        select(Reward, User.name, last.c.at)
+        .outerjoin(User, User.id == Reward.added_by)
+        .outerjoin(last, last.c.reward_id == Reward.id)
+        .order_by(Reward.cost, Reward.id)
+    )
+    if not include_inactive:
+        q = q.where(Reward.active.is_(True))
+    return [_reward_json(r, adder, at) for r, adder, at in db.execute(q).all()]
+
+
+@app.post("/api/rewards", status_code=201)
+def add_reward(
+    body: RewardIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    r = Reward(
+        name=body.name.strip(),
+        cost=body.cost,
+        repeatable=body.repeatable,
+        cooldown_days=body.cooldown_days,
+        added_by=user.id,
+    )
+    db.add(r)
+    db.commit()
+    return _reward_json(r, user.name)
+
+
+@app.patch("/api/rewards/{reward_id}")
+def update_reward(
+    reward_id: int,
+    body: RewardUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    r = db.get(Reward, reward_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="reward not found")
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(r, field, value.strip() if field == "name" else value)
+    db.commit()
+    adder = db.scalar(select(User.name).where(User.id == r.added_by))
+    return _reward_json(r, adder)
+
+
+@app.post("/api/rewards/{reward_id}/redeem")
+def redeem_reward(
+    reward_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    _lock_ledger(db)  # serialize so two redeems cannot overspend the balance
+    reward = db.get(Reward, reward_id)
+    if reward is None or not reward.active:
+        raise HTTPException(status_code=404, detail="reward not available")
+
+    last = db.scalar(
+        select(func.max(LedgerEntry.created_at)).where(
+            LedgerEntry.type == "redeem", LedgerEntry.reward_id == reward.id
+        )
+    )
+    if last is not None:
+        if not reward.repeatable:
+            raise HTTPException(status_code=409, detail="already redeemed (one-time reward)")
+        ready = last + dt.timedelta(days=reward.cooldown_days)
+        if reward.cooldown_days and dt.datetime.now(dt.timezone.utc) < ready:
+            raise HTTPException(
+                status_code=409,
+                detail=f"on cooldown until {ready.isoformat()}",
+            )
+
+    bal = current_balance(db)
+    if bal < reward.cost:
+        raise HTTPException(
+            status_code=409,
+            detail=f"not enough points: balance {bal}, cost {reward.cost}",
+        )
+
+    entry = _append(
+        db,
+        type="redeem",
+        user_id=user.id,
+        category="redeem",
+        points=-reward.cost,
+        reward_id=reward.id,
+        note=reward.name,
+    )
+    db.commit()
+    return _entry_json(entry, user.name, reward.name)
+
+
+@app.post("/api/adjust", status_code=201)
+def adjust(
+    body: AdjustIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    """Fix a mistake with a new row (never by editing history)."""
+    _lock_ledger(db)
+    if body.points == 0 or current_balance(db) + body.points < 0:
+        raise HTTPException(status_code=409, detail="balance cannot go below zero")
+    entry = _append(
+        db, type="adjust", user_id=user.id, category="adjust",
+        points=body.points, note=body.note,
+    )
+    db.commit()
+    return _entry_json(entry, user.name, None)
+
+
+@app.get("/api/ledger", dependencies=[Depends(current_user)])
+def ledger(
+    player: str | None = None,
+    type: str | None = Query(None, pattern="^(earn|redeem|adjust)$"),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_session),
+):
+    q = (
+        select(LedgerEntry, User.name, Reward.name)
+        .join(User, User.id == LedgerEntry.user_id)
+        .outerjoin(Reward, Reward.id == LedgerEntry.reward_id)
+        .order_by(LedgerEntry.id.desc())
+        .limit(limit)
+    )
+    if player:
+        q = q.where(User.name == player.strip().lower())
+    if type:
+        q = q.where(LedgerEntry.type == type)
+    return [_entry_json(e, p, rw) for e, p, rw in db.execute(q).all()]
+
+
+# ---------------------------------------------------------------------------
+# Scoring runner: turns closed weeks/months into ledger entries
+# ---------------------------------------------------------------------------
+
+
+def _today() -> dt.date:
+    return dt.date.today()
+
+
+def _day_synced(db: Session, users, day: dt.date, today: dt.date) -> bool:
+    """A period is ready once every player has a row for its last day (so the
+    Monday sync had a chance to land), or after READY_TIMEOUT_DAYS regardless."""
+    if today >= day + dt.timedelta(days=scoring.READY_TIMEOUT_DAYS):
+        return True
+    have = set(
+        db.scalars(select(DailyActivity.user_id).where(DailyActivity.date == day))
+    )
+    return all(u.id in have for u in users)
+
+
+def _load_days(db: Session, start: dt.date, end: dt.date) -> dict[int, dict[dt.date, tuple[int, int]]]:
+    out: dict[int, dict[dt.date, tuple[int, int]]] = {}
+    rows = db.execute(
+        select(
+            DailyActivity.user_id,
+            DailyActivity.date,
+            DailyActivity.exercise_minutes,
+            DailyActivity.active_calories,
+        ).where(DailyActivity.date >= start, DailyActivity.date <= end)
+    ).all()
+    for r in rows:
+        out.setdefault(r.user_id, {})[r.date] = (r.exercise_minutes, r.active_calories)
+    return out
+
+
+def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak: int) -> int:
+    """Write one week's ledger rows and its scoring_periods marker. Returns the
+    pair's new streak."""
+    period = f"wk-{monday.isoformat()}"
+    days = _load_days(db, monday, monday + dt.timedelta(days=6))
+    weeks = {
+        u.id: scoring.score_player_week(days.get(u.id, {}), monday, lambda d, uid=u.id: book.at(uid, d))
+        for u in users
+    }
+    pair_ok = all(w.ok for w in weeks.values())
+    streak = prev_streak + 1 if pair_ok else 0
+    mult = scoring.multiplier_for(streak)
+
+    # Daily points may already have been paid as days settled (period day-...).
+    # Pay only what is still owed, so the week's total is the same either way.
+    paid = {
+        (r.user_id, r.category): int(r.pts)
+        for r in db.execute(
+            select(
+                LedgerEntry.user_id,
+                LedgerEntry.category,
+                func.sum(LedgerEntry.points).label("pts"),
+            )
+            .where(
+                LedgerEntry.type == "earn",
+                LedgerEntry.period.in_([f"day-{d.isoformat()}" for d in scoring.week_days(monday)]),
+            )
+            .group_by(LedgerEntry.user_id, LedgerEntry.category)
+        )
+    }
+
+    for u in users:
+        w = weeks[u.id]
+        for category in ("calorie_daily", "calorie_weekly", "workout_day", "workout_goal"):
+            owed = getattr(w, category) - paid.get((u.id, category), 0)
+            _add_earn(db, u.id, period, category, owed)
+        extra = scoring.scaled(w.subtotal, mult) - w.subtotal
+        _add_earn(db, u.id, period, "multiplier", extra, note=f"x{mult} (streak {streak})")
+
+    if pair_ok:
+        total = scoring.scaled(scoring.TEAM_BONUS, mult)
+        share, rem = divmod(total, len(users))
+        for i, u in enumerate(users):
+            _add_earn(db, u.id, period, "team_bonus", share + (1 if i < rem else 0))
+
+    db.add(
+        ScoringPeriod(
+            period=period, kind="week", pair_ok=pair_ok, streak=streak, multiplier=str(mult)
+        )
+    )
+    return streak
+
+
+def _pay_settled_days(db: Session, users, book: GoalBook, first_monday: dt.date, today: dt.date) -> None:
+    """Pay the plain daily points (calorie tier, workout day) for days that have
+    settled but whose week has not been scored yet. A day settles two days after
+    it ends. Each day is paid once; the week-close step tops up anything that
+    rose afterwards."""
+    last_day = today - dt.timedelta(days=scoring.GRACE_DAYS + 1)
+    if last_day < first_monday:
+        return
+    days = _load_days(db, first_monday, last_day)
+    d = first_monday
+    while d <= last_day:
+        period = f"day-{d.isoformat()}"
+        for u in users:
+            minutes, calories = days.get(u.id, {}).get(d, (0, 0))
+            cal_pts, workout_pts = scoring.score_day(minutes, calories, book.at(u.id, d))
+            _add_earn(db, u.id, period, "calorie_daily", cal_pts)
+            _add_earn(db, u.id, period, "workout_day", workout_pts)
+        d += dt.timedelta(days=1)
+
+
+def _score_month(db: Session, users, book: GoalBook, month: str) -> None:
+    first, last = scoring.month_bounds(month)
+    days = _load_days(db, first, last)
+    n = (last - first).days + 1
+    for u in users:
+        # each day is judged against the calorie goal in force that day
+        hit = sum(
+            1
+            for day, (_, cal) in days.get(u.id, {}).items()
+            if cal >= book.at(u.id, day).min_calories
+        )
+        _add_earn(db, u.id, month, "calorie_monthly", scoring.monthly_points(hit, n))
+    db.add(ScoringPeriod(period=month, kind="month"))
+
+
+def run_scoring(db: Session, today: dt.date | None = None) -> list[str]:
+    """Score every closed week/month that has not been scored yet, in order.
+    Safe to call any time and as often as you like: scored periods are skipped,
+    so it is idempotent. Returns the periods scored by this call."""
+    if not SCORING_ENABLED:
+        return []
+    today = today or _today()
+    _lock_ledger(db)
+    users = db.execute(select(User).order_by(User.name)).scalars().all()
+    if not users:
+        db.rollback()
+        return []
+    book = load_goal_book(db)
+    done = {
+        p.period: p for p in db.scalars(select(ScoringPeriod))
+    }
+    scored: list[str] = []
+
+    # Weeks run Monday to Sunday; the first one is the first full week on or
+    # after the scoring start. Replayed in order so streaks carry correctly.
+    monday = SCORING_START + dt.timedelta(days=(7 - SCORING_START.weekday()) % 7)
+    streak = 0
+    while scoring.week_ready_date(monday) <= today:
+        period = f"wk-{monday.isoformat()}"
+        if period in done:
+            streak = done[period].streak or 0
+        else:
+            if not _day_synced(db, users, monday + dt.timedelta(days=6), today):
+                break  # later weeks depend on this one's streak, so wait
+            streak = _score_week(db, users, book, monday, streak)
+            scored.append(period)
+        monday += dt.timedelta(days=7)
+
+    # `monday` is now the first week that is not scored yet (still open, or
+    # waiting on a sync). Its settled days are paid daily in the meantime.
+    _pay_settled_days(db, users, book, monday, today)
+
+    # Calendar months that start on/after the scoring start and have finished.
+    y, m = SCORING_START.year, SCORING_START.month
+    if SCORING_START.day != 1:
+        y, m = y + (m == 12), (m % 12) + 1
+    while True:
+        month = f"{y}-{m:02d}"
+        _, last = scoring.month_bounds(month)
+        if last + dt.timedelta(days=1 + scoring.GRACE_DAYS) > today:
+            break
+        if month not in done and _day_synced(db, users, last, today):
+            _score_month(db, users, book, month)
+            scored.append(month)
+        y, m = y + (m == 12), (m % 12) + 1
+
+    db.commit()
+    return scored
+
+
+@app.post("/api/scoring/run", dependencies=[Depends(current_user)])
+def scoring_run(db: Session = Depends(get_session)):
+    return {
+        "enabled": SCORING_ENABLED,
+        "scored": run_scoring(db),
+        "scoring_start": SCORING_START.isoformat(),
     }
