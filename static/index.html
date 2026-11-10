@@ -75,6 +75,7 @@
   .goal-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.9rem; }
   .goal-row .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; flex: none; }
   .goal-row .goal-vals { color: var(--muted); margin-left: auto; white-space: pre; }
+  .metric-pick { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
   .legend .person { cursor: pointer; user-select: none; touch-action: manipulation; }
   .legend .person.off { opacity: 0.4; text-decoration: line-through; }
   .star-legend { color: #f5b301; margin-right: 6px; text-shadow: 0 0 1px rgba(0,0,0,0.5); }
@@ -98,6 +99,15 @@
   .reward:first-child { border-top: none; }
   .reward .info { flex: 1 1 200px; min-width: 0; }
   .reward .name { font-weight: 600; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .person-name { display: inline-flex; align-items: center; gap: 6px; }
+  .person-name strong { color: var(--fg); }
+  .earned-list { margin: 8px 0 12px; font-size: 0.9rem; }
+  .earned-grid { display: grid; grid-auto-flow: column; grid-template-columns: repeat(2, minmax(0, 230px)); gap: 6px 36px; margin-top: 6px; }
+  .earned-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .earned-pts { font-variant-numeric: tabular-nums; }
+  .earned-item.me { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 8px; padding: 3px 8px; margin: -3px -8px; font-weight: 600; }
+  .you { font-size: 0.68rem; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; line-height: 1.5; }
   .reward .actions { display: flex; gap: 8px; align-items: center; }
   .cost { font-weight: 700; white-space: nowrap; }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -159,6 +169,7 @@
   <div class="card">
     <div class="card-head">
       <h2>Calendar</h2>
+      <label class="metric-pick">Show: <select id="calMetric" aria-label="What the calendar colors show"></select></label>
     </div>
     <div class="status" id="calStatus"></div>
     <div class="cal">
@@ -181,20 +192,20 @@
       <div class="muted">
         <label>Range
           <select id="range">
-            <option value="14">14 days</option>
-            <option value="30" selected>30 days</option>
-            <option value="60">60 days</option>
-            <option value="90">90 days</option>
+            <option value="14">14 Days</option>
+            <option value="30" selected>30 Days</option>
+            <option value="60">60 Days</option>
+            <option value="90">90 Days</option>
           </select>
         </label>
-        <label style="margin-left:10px"><input type="checkbox" id="showGoals" checked> Goal lines</label>
+        <label style="margin-left:10px"><input type="checkbox" id="showGoals" checked> Goal Lines</label>
       </div>
     </div>
     <div class="muted" style="margin-bottom:8px">Dots are daily values (filled = met your goal, hollow = below it). Bold line = 7-day average, dashed = goal. You are shown by default; tap a name to show or hide someone, or double-tap to show only them.</div>
     <div class="status" id="chartStatus"></div>
-    <h2 style="margin:8px 0">Exercise minutes</h2>
+    <h2 style="margin:8px 0">Exercise Minutes</h2>
     <div class="chart-wrap"><canvas id="minutesChart"></canvas></div>
-    <h2 style="margin:16px 0 8px">Active calories</h2>
+    <h2 style="margin:16px 0 8px">Active Calories</h2>
     <div class="chart-wrap"><canvas id="caloriesChart"></canvas></div>
   </div>
   </div>
@@ -202,27 +213,29 @@
 
   <section id="tab-rewards" class="tab-panel">
   <div class="card">
-    <div class="card-head"><h2>Points &amp; rewards</h2><button class="primary" id="addRewardBtn">+ Add reward</button></div>
+    <div class="card-head"><h2>Points &amp; Rewards</h2><button class="primary" id="addRewardBtn">+ Add reward</button></div>
     <div class="balance">
       <span class="big" id="balanceNum">-</span>
       <span class="muted">shared points</span>
     </div>
-    <div class="muted" id="earnedBy" style="margin:4px 0 10px"></div>
+    <div class="earned-list" id="earnedBy"></div>
     <div class="status" id="storeStatus"></div>
     <div id="rewardList"></div>
   </div>
 
   <div class="card">
     <div class="card-head">
-      <h2>Points history</h2>
+      <h2>Points History</h2>
       <div class="filters">
         <select id="ledgerPlayer"><option value="">Everyone</option></select>
         <select id="ledgerType">
-          <option value="">All types</option>
+          <option value="">All Types</option>
           <option value="earn">Earned</option>
           <option value="redeem">Redeemed</option>
           <option value="adjust">Adjustments</option>
         </select>
+        <select id="ledgerMonth" aria-label="Month"><option value="">All Time</option></select>
+        <input type="text" id="ledgerSearch" placeholder="Search History" maxlength="100" aria-label="Search">
       </div>
     </div>
     <div class="status" id="ledgerStatus"></div>
@@ -232,13 +245,14 @@
         <tbody id="ledgerBody"></tbody>
       </table>
     </div>
+    <div style="margin-top:10px"><button id="ledgerMore" hidden>Show More</button></div>
     <div style="margin-top:10px"><a class="link" id="adjustLink">Fix a mistake (adjustment)</a></div>
   </div>
   </section>
 
   <section id="tab-settings" class="tab-panel">
   <div class="card">
-    <div class="card-head"><h2>My goals</h2></div>
+    <div class="card-head"><h2>My Goals</h2></div>
     <div class="goal-form">
       <label>Exercise minutes per day
         <input type="number" id="goalMinutes" min="1" max="1440" step="1">
@@ -256,7 +270,7 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>My color</h2></div>
+    <div class="card-head"><h2>My Color</h2></div>
     <div class="muted" style="margin-bottom:10px">Shown on the calendar and charts. Pick a swatch, or choose any color.</div>
     <div class="swatches" id="swatches"></div>
     <div class="custom-color">
@@ -271,7 +285,7 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>API key</h2></div>
+    <div class="card-head"><h2>API Key</h2></div>
     <div class="muted" style="margin-bottom:8px">This device stores your key so you stay signed in.</div>
     <div class="muted" id="keyOwner" style="margin-bottom:8px"></div>
     <button id="changeKey">Change key</button>
@@ -280,7 +294,7 @@
 
   <dialog id="rewardDialog">
     <form method="dialog" id="rewardForm">
-      <h2 id="rewardDialogTitle">Add reward</h2>
+      <h2 id="rewardDialogTitle">Add Reward</h2>
       <label>Name
         <input type="text" id="rwName" maxlength="100" required>
       </label>
@@ -301,7 +315,7 @@
 
   <dialog id="adjustDialog">
     <form method="dialog" id="adjustForm">
-      <h2>Fix a mistake</h2>
+      <h2>Fix a Mistake</h2>
       <div class="muted">Adds a correction to the history. Past entries are never edited.</div>
       <label>Points (negative to remove)
         <input type="number" id="adjPoints" step="1" required>
@@ -321,6 +335,20 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 const KEY_STORAGE = 'wt_key';
+const METRIC_KEY = 'wt_cal_metric';
+// What the calendar colors show. Rename the labels here.
+const METRICS = {
+  workout: { label: 'Complete Workout', hit: (e) => e.workout,
+             note: 'A day is a complete workout when you reach both your minutes and your calorie goal.' },
+  calories: { label: 'Active Calories', hit: (e) => e.calorie_hit,
+              note: 'A day counts when you reach your calorie goal.' },
+  minutes: { label: 'Exercise Minutes', hit: (e) => e.minutes_hit,
+             note: 'A day counts when you reach your exercise minutes goal.' },
+};
+let calMetric = 'workout';
+let myName = '';  // the signed-in person, set when /api/me loads
+try { const saved = localStorage.getItem(METRIC_KEY); if (saved && METRICS[saved]) calMetric = saved; } catch (e) {}
+function hitsMetric(e) { return !!(e && METRICS[calMetric].hit(e)); }
 const PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#ec4899', '#eab308', '#14b8a6'];
 const charts = {};
 let USERS = [];
@@ -403,7 +431,7 @@ function showDetail(iso, entry) {
   const when = new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
-  const everyone = USERS.length > 1 && USERS.every((u) => entry[u] && entry[u].workout);
+  const everyone = USERS.length > 1 && USERS.every((u) => hitsMetric(entry[u]));
   box.appendChild(el('div', 'detail-title', (everyone ? '\u2605 ' : '') + when));
   USERS.forEach((u) => {
     const e = entry[u];
@@ -467,7 +495,7 @@ function renderCalendar() {
   for (let d = 1; d <= dim; d++) {
     const iso = y + '-' + pad(m) + '-' + pad(d);
     const entry = cal.days[iso] || {};
-    const didAll = USERS.filter((u) => entry[u] && entry[u].workout);
+    const didAll = USERS.filter((u) => hitsMetric(entry[u]));
     didAll.forEach((u) => { counts[u]++; });
     const everyoneDid = n > 1 && didAll.length === n;
     if (everyoneDid) allCount++;
@@ -535,8 +563,8 @@ function renderCalendar() {
   // One row per person: color dot, bold name, then their goals.
   const box = $('threshold');
   box.innerHTML = '';
-  box.appendChild(el('div', 'goal-title', 'Workout day goals'));
-  box.appendChild(el('div', 'muted', 'A day counts when you reach both.'));
+  box.appendChild(el('div', 'goal-title', 'Goals'));
+  box.appendChild(el('div', 'muted', METRICS[calMetric].note));
   USERS.forEach((u) => {
     const g = cal.goals[u];
     if (!g) return;
@@ -639,7 +667,7 @@ function goalLines(key, names) {
     return [{ label: 'Goal (' + values[0] + ')', value: values[0], color: cssVar('--muted'), person: null }];
   }
   return people.map((u) => ({
-    label: cap(u) + ' goal (' + cal.goals[u][key] + ')',
+    label: cap(u) + ' Goal (' + cal.goals[u][key] + ')',
     value: cal.goals[u][key],
     color: colorOf(u),
     person: u,
@@ -665,7 +693,7 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
     // Daily values: dots only, no connecting line.
     // Filled = at or above your goal, hollow = below it.
     datasets.push({
-      label: cap(name) + ' (daily)',
+      label: cap(name) + ' (Daily)',
       _person: name, _kind: 'daily', _goal: goal, _hideLegend: true,
       hidden, order: 2,
       data: values,
@@ -678,7 +706,7 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
 
     // The trend: bold solid 7-day average. This is the legend entry for the person.
     datasets.push({
-      label: perPersonGoals && goal !== null ? cap(name) + ' (goal ' + goal + ')' : cap(name),
+      label: perPersonGoals && goal !== null ? cap(name) + ' (Goal ' + goal + ')' : cap(name),
       _person: name, _kind: 'avg',
       hidden, order: 1,
       data: rollingAvg(values, 7),
@@ -746,9 +774,9 @@ function buildChart(canvasId, field, goalKey, rows, showGoalLines) {
               const d = ctx.dataset;
               const v = ctx.parsed.y;
               if (d._kind === 'daily') {
-                return cap(d._person) + ': ' + v + (d._goal !== null && v >= d._goal ? ' (goal met)' : '');
+                return cap(d._person) + ': ' + v + (d._goal !== null && v >= d._goal ? ' (Goal Met)' : '');
               }
-              if (d._kind === 'avg') return cap(d._person) + ' 7-day avg: ' + v;
+              if (d._kind === 'avg') return cap(d._person) + ' 7-Day Avg: ' + v;
               return d.label;
             },
           },
@@ -786,6 +814,7 @@ async function loadMe() {
   try {
     const me = await apiGet('/api/me');
     if (!me) return;
+    myName = me.name;
     if (visiblePeople === null) visiblePeople = new Set([me.name]);
     $('goalMinutes').value = me.min_minutes;
     $('goalCalories').value = me.min_calories;
@@ -855,6 +884,17 @@ function say(id, msg, isError) {
   e.classList.toggle('error', !!isError && !!msg);
 }
 
+// A person's name in bold, with their color square in front.
+function personName(name) {
+  const wrap = el('span', 'person-name');
+  const dot = el('span', 'dot');
+  dot.style.background = colorOf(name);
+  wrap.appendChild(dot);
+  wrap.appendChild(el('strong', null, cap(name)));
+  if (name === myName) wrap.appendChild(el('span', 'you', 'You'));
+  return wrap;
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -863,7 +903,10 @@ function el(tag, cls, text) {
 }
 
 function fmtWhen(iso) {
-  return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const d = new Date(iso);
+  const opts = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';  // only when it is not this year
+  return d.toLocaleString(undefined, opts);
 }
 
 function cooldownNote(r) {
@@ -876,8 +919,22 @@ async function loadBalance() {
   const b = await apiGet('/api/balance');
   if (!b) return null;
   $('balanceNum').textContent = b.balance;
-  const parts = Object.keys(b.earned_by).map((n) => cap(n) + ' earned ' + b.earned_by[n]);
-  $('earnedBy').textContent = parts.join('  |  ');
+  const box = $('earnedBy');
+  box.innerHTML = '';
+  const names = Object.keys(b.earned_by);
+  if (names.length) {
+    box.appendChild(el('div', 'muted', 'Earned by'));
+    // Two columns, filled top to bottom, balanced: 6 people = 3 + 3, 5 = 3 + 2.
+    const grid = el('div', 'earned-grid');
+    grid.style.gridTemplateRows = 'repeat(' + Math.ceil(names.length / 2) + ', auto)';
+    names.forEach((n) => {
+      const item = el('div', 'earned-item' + (n === myName ? ' me' : ''));
+      item.appendChild(personName(n));
+      item.appendChild(el('span', 'earned-pts', b.earned_by[n] + ' pts'));
+      grid.appendChild(item);
+    });
+    box.appendChild(grid);
+  }
   return b.balance;
 }
 
@@ -892,10 +949,14 @@ function renderRewards(balance) {
     const bits = [];
     if (!r.repeatable) bits.push(r.last_redeemed_at ? 'one-time (used)' : 'one-time');
     if (r.cooldown_days) bits.push(r.cooldown_days + '-day cooldown');
-    if (r.added_by) bits.push('added by ' + cap(r.added_by));
     const wait = cooldownNote(r);
     if (wait) bits.push(wait);
-    info.appendChild(el('div', 'muted', bits.join(' · ')));
+    const sub = el('div', 'muted', bits.join(' · '));
+    if (r.added_by) {
+      sub.appendChild(document.createTextNode((bits.length ? ' · ' : '') + 'added by '));
+      sub.appendChild(el('strong', null, cap(r.added_by)));
+    }
+    info.appendChild(sub);
     row.appendChild(info);
 
     const actions = el('div', 'actions');
@@ -943,7 +1004,7 @@ let editingId = null;
 
 function openRewardDialog(r) {
   editingId = r ? r.id : null;
-  $('rewardDialogTitle').textContent = r ? 'Edit reward' : 'Add reward';
+  $('rewardDialogTitle').textContent = r ? 'Edit Reward' : 'Add Reward';
   $('rwName').value = r ? r.name : '';
   $('rwCost').value = r ? r.cost : '';
   $('rwCooldown').value = r ? r.cooldown_days : 0;
@@ -997,38 +1058,91 @@ async function postAdjust(ev) {
   await Promise.all([loadStore(), loadLedger()]);
 }
 
+// The sentence for a row comes ready-made from the server (labels.py).
 function whatText(e) {
-  if (e.type === 'redeem') return 'Redeemed: ' + (e.reward || e.note || '');
-  if (e.type === 'adjust') return 'Adjustment: ' + (e.note || '');
-  const label = e.category.replace(/_/g, ' ');
-  if (!e.period) return label;
-  if (e.period.startsWith('day-')) return label + ' (' + e.period.slice(4) + ')';
-  if (e.period.startsWith('wk-')) return label + ' (week of ' + e.period.slice(3) + ')';
-  return label + ' (' + e.period + ')';
+  return e.what || e.category;
+}
+
+const LEDGER_PAGE = 15;
+let ledgerRows = [];
+let ledgerHasMore = false;
+let ledgerTimer = null;
+
+function ledgerParams(before) {
+  // Ask for one extra row: if it comes back, there is another page.
+  const params = new URLSearchParams({ limit: String(LEDGER_PAGE + 1) });
+  if ($('ledgerPlayer').value) params.set('player', $('ledgerPlayer').value);
+  if ($('ledgerType').value) params.set('type', $('ledgerType').value);
+  if ($('ledgerMonth').value) params.set('month', $('ledgerMonth').value);
+  const q = $('ledgerSearch').value.trim();
+  if (q) params.set('q', q);
+  if (before) params.set('before', String(before));
+  return params;
+}
+
+function renderLedger() {
+  const body = $('ledgerBody');
+  body.innerHTML = '';
+  ledgerRows.forEach((e) => {
+    const tr = document.createElement('tr');
+    tr.appendChild(el('td', null, fmtWhen(e.created_at)));
+    const who = el('td', 'who');
+    who.appendChild(personName(e.player));
+    tr.appendChild(who);
+    tr.appendChild(el('td', null, whatText(e)));
+    tr.appendChild(el('td', 'num ' + (e.points > 0 ? 'pos' : 'neg'), (e.points > 0 ? '+' : '') + e.points));
+    tr.appendChild(el('td', 'num', String(e.balance_after)));
+    body.appendChild(tr);
+  });
+  const filtered = $('ledgerPlayer').value || $('ledgerType').value || $('ledgerMonth').value || $('ledgerSearch').value.trim();
+  say('ledgerStatus', ledgerRows.length ? '' : (filtered ? 'No entries match.' : 'No entries yet.'));
+  $('ledgerMore').hidden = !ledgerHasMore;
 }
 
 async function loadLedger() {
-  const params = new URLSearchParams({ limit: '100' });
-  if ($('ledgerPlayer').value) params.set('player', $('ledgerPlayer').value);
-  if ($('ledgerType').value) params.set('type', $('ledgerType').value);
   try {
-    const rows = await apiGet('/api/ledger?' + params);
+    const rows = await apiGet('/api/ledger?' + ledgerParams());
     if (!rows) return;
-    const body = $('ledgerBody');
-    body.innerHTML = '';
-    rows.forEach((e) => {
-      const tr = document.createElement('tr');
-      tr.appendChild(el('td', null, fmtWhen(e.created_at)));
-      tr.appendChild(el('td', null, cap(e.player)));
-      tr.appendChild(el('td', null, whatText(e)));
-      tr.appendChild(el('td', 'num ' + (e.points > 0 ? 'pos' : 'neg'), (e.points > 0 ? '+' : '') + e.points));
-      tr.appendChild(el('td', 'num', String(e.balance_after)));
-      body.appendChild(tr);
-    });
-    say('ledgerStatus', rows.length ? '' : 'No entries yet.');
+    ledgerHasMore = rows.length > LEDGER_PAGE;
+    ledgerRows = rows.slice(0, LEDGER_PAGE);
+    renderLedger();
+    loadLedgerMonths();
   } catch (e) {
     say('ledgerStatus', 'Could not load history. Try again in a moment.', true);
   }
+}
+
+async function showMoreLedger() {
+  const last = ledgerRows[ledgerRows.length - 1];
+  if (!last) return;
+  $('ledgerMore').disabled = true;
+  try {
+    const rows = await apiGet('/api/ledger?' + ledgerParams(last.id));
+    if (!rows) return;
+    ledgerHasMore = rows.length > LEDGER_PAGE;
+    ledgerRows = ledgerRows.concat(rows.slice(0, LEDGER_PAGE));
+    renderLedger();
+  } catch (e) {
+    say('ledgerStatus', 'Could not load more. Try again in a moment.', true);
+  } finally {
+    $('ledgerMore').disabled = false;
+  }
+}
+
+async function loadLedgerMonths() {
+  try {
+    const months = await apiGet('/api/ledger/months');
+    if (!months) return;
+    const sel = $('ledgerMonth');
+    const current = sel.value;
+    sel.innerHTML = '';
+    sel.appendChild(new Option('All Time', ''));
+    months.forEach((m) => {
+      const label = new Date(m + '-01T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      sel.appendChild(new Option(label, m));
+    });
+    sel.value = months.includes(current) ? current : '';
+  } catch (e) { /* the filter just stays as it was */ }
 }
 
 function fillPlayerFilter() {
@@ -1113,6 +1227,16 @@ $('nextMonth').addEventListener('click', () => {
 $('range').addEventListener('change', loadCharts);
 $('saveGoals').addEventListener('click', saveGoals);
 $('showGoals').addEventListener('change', renderCharts);
+(function initMetric() {
+  const sel = $('calMetric');
+  Object.keys(METRICS).forEach((k) => sel.appendChild(new Option(METRICS[k].label, k)));
+  sel.value = calMetric;
+  sel.addEventListener('change', () => {
+    calMetric = sel.value;
+    try { localStorage.setItem(METRIC_KEY, calMetric); } catch (e) {}
+    renderCalendar();
+  });
+})();
 $('addRewardBtn').addEventListener('click', () => openRewardDialog(null));
 $('rewardForm').addEventListener('submit', saveReward);
 $('rwCancel').addEventListener('click', () => $('rewardDialog').close());
@@ -1128,6 +1252,12 @@ document.querySelectorAll('#tabs button').forEach((b) => {
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1), false));
 $('ledgerPlayer').addEventListener('change', loadLedger);
 $('ledgerType').addEventListener('change', loadLedger);
+$('ledgerMonth').addEventListener('change', loadLedger);
+$('ledgerSearch').addEventListener('input', () => {
+  clearTimeout(ledgerTimer);
+  ledgerTimer = setTimeout(loadLedger, 300);  // wait for a pause in typing
+});
+$('ledgerMore').addEventListener('click', showMoreLedger);
 $('adjustLink').addEventListener('click', openAdjustDialog);
 $('colorPicker').addEventListener('input', () => {
   $('colorHex').value = $('colorPicker').value;

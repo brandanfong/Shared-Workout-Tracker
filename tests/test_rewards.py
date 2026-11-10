@@ -188,3 +188,138 @@ def test_ledger_rejects_bad_rows_at_db_level():
                 ),
                 {"u": u.id},
             )
+
+
+# ---------- history: month filter, search, paging ----------
+
+
+def _months(client, auth):
+    return client.get("/api/ledger/months", headers=auth).json()
+
+
+def test_month_filter_uses_the_month_a_day_was_earned_for(client, auth, earn):
+    # A day is paid two days late: the 30th is written on the 2nd but belongs to November.
+    earn(5, period="day-2026-11-30", category="calorie_daily")
+    earn(7, period="day-2026-12-01", category="calorie_daily")
+    earn(9, period="wk-2026-10-26", category="workout_goal")
+    earn(11, period="2026-10", category="calorie_monthly")
+
+    def points(month):
+        rows = client.get(f"/api/ledger?month={month}", headers=auth).json()
+        return sorted(e["points"] for e in rows)
+
+    assert points("2026-11") == [5]
+    assert points("2026-12") == [7]
+    assert points("2026-10") == [9, 11]
+    assert points("2025-01") == []
+
+
+def test_redeems_and_adjustments_count_in_the_month_they_happened(client, auth, earn, reward):
+    import datetime as dt
+    earn(100, period="day-2026-01-05", category="calorie_daily")
+    r = reward(cost=10)
+    client.post(f"/api/rewards/{r['id']}/redeem", headers=auth)
+    this_month = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m")
+    rows = client.get(f"/api/ledger?month={this_month}&type=redeem", headers=auth).json()
+    assert len(rows) == 1
+
+
+def test_months_list_is_distinct_and_newest_first(client, auth, earn):
+    earn(1, period="day-2026-09-10", category="calorie_daily")
+    earn(1, period="day-2026-09-11", category="calorie_daily")
+    earn(1, period="day-2026-11-03", category="calorie_daily")
+    earn(1, period="wk-2026-10-05", category="workout_goal")
+    months = _months(client, auth)
+    assert months == ["2026-11", "2026-10", "2026-09"]
+
+
+def test_search_matches_reward_names_and_notes(client, auth, earn, reward):
+    earn(100)
+    r = reward(name="Pizza Night", cost=10)
+    client.post(f"/api/rewards/{r['id']}/redeem", headers=auth)
+    client.post("/api/adjust", json={"points": -2, "note": "Double counted Tuesday"}, headers=auth)
+
+    def found(q):
+        return len(client.get("/api/ledger", params={"q": q}, headers=auth).json())
+
+    assert found("pizza") == 1          # case-insensitive, reward name
+    assert found("TUESDAY") == 1        # adjustment note
+    assert found("nothing like this") == 0
+    assert found("  pizza  ") == 1      # spaces around it are ignored
+
+
+def test_search_treats_percent_and_underscore_literally(client, auth, earn, reward):
+    earn(100)
+    r = reward(name="Date Night", cost=10)
+    client.post(f"/api/rewards/{r['id']}/redeem", headers=auth)
+    assert client.get("/api/ledger", params={"q": "%"}, headers=auth).json() == []
+    assert client.get("/api/ledger", params={"q": "D_te"}, headers=auth).json() == []
+
+
+def test_paging_with_before_has_no_gaps_or_repeats(client, auth, earn):
+    for i in range(5):
+        earn(i + 1, period=f"day-2026-11-0{i + 1}", category="calorie_daily")
+    page1 = client.get("/api/ledger?limit=2", headers=auth).json()
+    page2 = client.get(f"/api/ledger?limit=2&before={page1[-1]['id']}", headers=auth).json()
+    page3 = client.get(f"/api/ledger?limit=2&before={page2[-1]['id']}", headers=auth).json()
+    ids = [e["id"] for e in page1 + page2 + page3]
+    assert len(page1) == 2 and len(page2) == 2 and len(page3) == 1
+    assert ids == sorted(ids, reverse=True) and len(set(ids)) == 5
+
+
+def test_filters_combine(client, auth, headers, earn):
+    earn(5, "brandan", period="day-2026-11-03", category="calorie_daily")
+    earn(6, "partner", period="day-2026-11-03", category="calorie_daily")
+    earn(7, "partner", period="day-2026-10-03", category="calorie_daily")
+    rows = client.get("/api/ledger?player=partner&month=2026-11&type=earn", headers=auth).json()
+    assert [e["points"] for e in rows] == [6]
+
+
+@pytest.mark.parametrize("params", ["month=2026-13", "month=2026-1", "month=abc", "limit=0", "before=0"])
+def test_bad_history_options_are_rejected(client, auth, params):
+    assert client.get(f"/api/ledger?{params}", headers=auth).status_code == 422
+
+
+def test_history_months_requires_a_key(client):
+    assert client.get("/api/ledger/months").status_code == 401
+
+
+def test_search_finds_what_the_table_shows(client, auth, headers, earn, reward):
+    import datetime as dt
+    y = dt.date.today().year
+    earn(5, "brandan", period=f"day-{y}-11-04", category="calorie_daily")
+    earn(6, "partner", period=f"wk-{y}-11-02", category="workout_goal")
+    earn(7, "partner", period=f"{y}-10", category="calorie_monthly")
+    earn(50, "brandan", period=f"day-{y}-11-05", category="workout_day")
+    earn(60, "brandan", period=f"day-{y - 1}-03-09", category="calorie_daily")
+    r = reward(name="Movie Night", cost=10)
+    client.post(f"/api/rewards/{r['id']}/redeem", headers=auth)
+
+    def pts(q):
+        return sorted(e["points"] for e in client.get("/api/ledger", params={"q": q}, headers=auth).json())
+
+    assert pts("daily calorie") == [5, 60]        # the wording shown in the table
+    assert pts("calorie") == [5, 7, 60]           # partial word
+    assert pts("complete workout") == [50]
+    assert pts("weekly workout goal") == [6]
+    assert pts(f"week of {y}-11-02") == [6]       # a week, ISO form
+    assert pts(f"{y}-11-04") == [5]               # a day's date
+    assert pts("nov 4") == [5]                    # short date as shown
+    assert pts("november") == [5, 6, 50]          # month name of dated rows
+    assert pts(f"october {y}") == [7]
+    assert pts("mar 9") == [60]                   # last year's day
+    assert pts(f"mar 9, {y - 1}") == [60]         # ...as shown, with its year
+    assert pts("partner") == [6, 7]               # who
+    assert pts("redeemed") == [-10]               # the type
+    assert pts("movie") == [-10]                  # reward
+    assert pts("nothing here") == []
+
+
+def test_history_rows_carry_their_sentence(client, auth, earn):
+    import datetime as dt
+    y = dt.date.today().year
+    earn(5, "brandan", period=f"day-{y}-11-04", category="calorie_daily")
+    earn(6, "brandan", period=f"day-{y - 1}-11-04", category="calorie_daily")
+    rows = {e["points"]: e["what"] for e in client.get("/api/ledger", headers=auth).json()}
+    assert rows[5] == "Daily Calorie Goal Reached \u00b7 Nov 4"
+    assert rows[6] == f"Daily Calorie Goal Reached \u00b7 Nov 4, {y - 1}"

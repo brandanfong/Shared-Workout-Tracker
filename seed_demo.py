@@ -1,11 +1,13 @@
-"""Fill the TEST database with fake people and activity so the charts, calendar
+"""Fill a DEMO database with fake people and activity so the charts, calendar
 and rewards pages have something to show.
 
     python seed_demo.py
 
-Reads TEST_DATABASE_URL from .env. It WIPES every table in that database first
-(the same thing the test suite does), and refuses to run if it points at the
-same database as DATABASE_URL, so your real data is never touched.
+Reads DEMO_DATABASE_URL from .env (a separate database, such as a Neon branch
+called "demo", so running the tests never wipes it). If that is not set it falls
+back to TEST_DATABASE_URL. It WIPES every table in that database first, and
+refuses to run if it points at the same database as DATABASE_URL, so your real
+data is never touched.
 
 At the end it prints the demo API keys and the environment to use when starting
 the server against the demo data.
@@ -34,12 +36,20 @@ def norm(url: str | None) -> str:
 
 
 env = read_env()
-test_url = os.environ.get("TEST_DATABASE_URL") or env.get("TEST_DATABASE_URL")
+DEMO_VAR = "DEMO_DATABASE_URL"
+demo_url = os.environ.get(DEMO_VAR) or env.get(DEMO_VAR)
+if not demo_url:
+    DEMO_VAR = "TEST_DATABASE_URL"  # fallback: shared with the test suite, which wipes it
+    demo_url = os.environ.get(DEMO_VAR) or env.get(DEMO_VAR)
 real_url = os.environ.get("DATABASE_URL") or env.get("DATABASE_URL")
-if not test_url:
-    sys.exit("TEST_DATABASE_URL is not set (put it in .env).")
-if norm(test_url) == norm(real_url):
-    sys.exit("TEST_DATABASE_URL is the same database as DATABASE_URL. Refusing to wipe it.")
+if not demo_url:
+    sys.exit("DEMO_DATABASE_URL is not set (put it in .env).")
+if norm(demo_url) == norm(real_url):
+    sys.exit(f"{DEMO_VAR} is the same database as DATABASE_URL. Refusing to wipe it.")
+test_url = os.environ.get("TEST_DATABASE_URL") or env.get("TEST_DATABASE_URL")
+if DEMO_VAR == "DEMO_DATABASE_URL" and test_url and norm(demo_url) == norm(test_url):
+    print("Note: DEMO_DATABASE_URL is the same database as TEST_DATABASE_URL, so running "
+          "the tests will wipe the demo data. Use a separate branch to avoid that.\n")
 
 WEEKS = 8
 today = dt.date.today()
@@ -47,7 +57,7 @@ this_monday = today - dt.timedelta(days=today.weekday())
 start = this_monday - dt.timedelta(weeks=WEEKS)
 
 # Must be set BEFORE main is imported (it reads these at import time).
-os.environ["DATABASE_URL"] = test_url
+os.environ["DATABASE_URL"] = demo_url
 os.environ["SCORING_ENABLED"] = "true"
 os.environ["SCORING_START_DATE"] = start.isoformat()
 
@@ -61,6 +71,9 @@ PEOPLE = {
     "demo_a": (500, 30, 4, 720, 430),
     "demo_b": (400, 30, 3, 560, 330),
     "demo_c": (450, 40, 5, 650, 380),
+    "demo_d": (550, 30, 3, 800, 470),
+    "demo_e": (350, 25, 4, 500, 290),
+    "demo_f": (480, 45, 2, 700, 410),
 }
 
 rng = random.Random(7)
@@ -77,8 +90,13 @@ main.seed_rewards()
 keys = {}
 with Session(main.engine) as db:
     for name, (cal_goal, min_goal, per_week, workout_cal, rest_cal) in PEOPLE.items():
-        keys[name] = main.issue_key(db, name, "demo")
-        user = db.scalar(main.select(main.User).where(main.User.name == name))
+        # Fixed, easy-to-remember keys (demo_a -> "demo-a"), so nothing needs looking up
+        # after a re-seed. They only work against this throwaway demo database.
+        user = main.User(name=name)
+        db.add(user)
+        db.flush()
+        keys[name] = name.replace("_", "-")
+        db.add(main.ApiKey(user_id=user.id, key_hash=main.hash_key(keys[name]), label="demo (fixed key)"))
         db.add(
             main.UserGoal(
                 user_id=user.id,
@@ -113,12 +131,12 @@ with Session(main.engine) as db:
     balance = main.current_balance(db)
 
 print(f"Scored {len(scored)} periods; shared balance is {balance} points.\n")
-print("Demo API keys (for the throwaway test database only):")
+print("Demo API keys (fixed; they only work against the demo database):")
 for name, key in keys.items():
     print(f"  {name}: {key}")
 print(
     "\nStart the server against the demo data in a PowerShell window:\n"
-    "  Get-Content .env | % { if ($_ -match '^\\s*TEST_DATABASE_URL\\s*=\\s*(.*)$') "
+    f"  Get-Content .env | % {{ if ($_ -match '^\\s*{DEMO_VAR}\\s*=\\s*(.*)$') "
     "{ $env:DATABASE_URL = $Matches[1].Trim() } }\n"
     f"  $env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '{start.isoformat()}'\n"
     "  .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload"

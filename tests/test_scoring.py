@@ -286,7 +286,7 @@ def test_calorie_goal_change_mid_week_applies_from_that_day(client, auth, player
     daily = [e["points"] for e in client.get("/api/ledger?limit=1000", headers=auth).json()
              if e["category"] == "calorie_daily" and e["player"] == "brandan"]
     # Mon-Wed at goal 500 (750 cal = 2 pts each) = 6; Thu-Sun at goal 100 = 3 pts each = 12
-    assert daily == [18]
+    assert sum(daily) == 18 and len(daily) == 7  # one row per day
 
 
 def test_weekly_target_counts_for_the_whole_week_and_locks_at_sunday(client, auth, players, put, monkeypatch):
@@ -364,8 +364,26 @@ def test_late_increase_after_a_day_was_paid_is_topped_up_at_close(client, auth, 
     assert balance(client, auth)["balance"] == 55  # 54 plus one extra tier point
 
 
-def test_backfilled_old_weeks_are_paid_at_close_without_daily_rows(client, auth, players, put):
+def test_backfilled_old_weeks_get_one_row_per_day_like_live_days(client, auth, players, put):
     good_week(put)
     score(D(2026, 12, 1))
-    cats = {e["period"][:3] for e in ledger_rows(client, auth)}
-    assert "day" not in cats and balance(client, auth)["balance"] == 54
+    rows = ledger_rows(client, auth)
+    daily = [e for e in rows if e["category"] in ("calorie_daily", "workout_day")]
+    assert daily and all(e["period"].startswith("day-") for e in daily)  # no week-stamped daily rows
+    assert not any(e["note"] == "Late Update" for e in rows)             # nothing needed topping up
+    assert balance(client, auth)["balance"] == 54                          # same total as ever
+    keys = [(e["player"], e["period"], e["category"]) for e in rows]
+    assert len(keys) == len(set(keys))
+
+
+def test_late_update_is_labelled(client, auth, players, put):
+    good_week(put)
+    score(D(2026, 11, 6))
+    with engine.begin() as conn:
+        conn.execute(main.text(
+            "UPDATE daily_activity SET active_calories = 1000 "
+            "WHERE date = '2026-11-02' AND user_id = (SELECT id FROM users WHERE name = 'partner')"))
+    score(D(2026, 11, 10))
+    late = [e for e in ledger_rows(client, auth) if e["note"] == "Late Update"]
+    assert len(late) == 1 and late[0]["points"] == 1
+    assert late[0]["what"].startswith("Daily Calorie Goal Reached: Late Update \u00b7 Week of Nov 2")

@@ -8,12 +8,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, ForeignKey,
-                        Index, Integer, String, UniqueConstraint,
-                        create_engine, func, inspect, select, text)
+                        Index, Integer, String, UniqueConstraint, case,
+                        create_engine, func, inspect, or_, select, text)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 import colors
+import labels
 import scoring
 
 # Tolerate stray quotes/whitespace and a plain postgresql:// prefix
@@ -690,6 +691,7 @@ def _entry_json(e: LedgerEntry, player: str, reward: str | None) -> dict:
         "reward_id": e.reward_id,
         "reward": reward,
         "note": e.note,
+        "what": labels.entry_what(e.type, e.category, e.period, e.note, reward),
     }
 
 
@@ -839,14 +841,82 @@ def adjust(
     return _entry_json(entry, user.name, None)
 
 
+def _earned_month():
+    """The YYYY-MM an entry belongs to: the month it was earned FOR (read from its
+    period, so a day paid two days late still counts in its own month), or for
+    redemptions and adjustments the month they happened."""
+    p = LedgerEntry.period
+    return case(
+        (or_(p.like("day-%"), p.like("wk-%")), func.substr(p, func.strpos(p, "-") + 1, 7)),
+        (p.op("~")(r"^\d{4}-\d{2}$"), p),
+        else_=func.to_char(func.timezone("UTC", LedgerEntry.created_at), "YYYY-MM"),
+    )
+
+
+def _like_pattern(text_: str) -> str:
+    """Turn what someone typed into a safe 'contains' pattern."""
+    escaped = text_.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _searchable_text():
+    """One string per row holding what the history table shows (who, the sentence
+    for what happened, the reward, the note), so searching finds what you can
+    see. Dates also match as month names ("november") and short dates ("nov 4")."""
+    p = LedgerEntry.period
+    category_label = case(
+        *[(LedgerEntry.category == k, v) for k, v in labels.CATEGORY_LABELS.items()],
+        else_=func.replace(LedgerEntry.category, "_", " "),
+    )
+    type_label = case(
+        (LedgerEntry.type == "earn", "earned"),
+        (LedgerEntry.type == "redeem", "redeemed"),
+        else_="adjustment",
+    )
+    period_label = case(
+        (p.like("wk-%"), func.concat("week of ", func.substr(p, 4))),
+        (p.like("day-%"), func.substr(p, 5)),
+        else_=func.coalesce(p, ""),
+    )
+    day_words = case(
+        (
+            or_(p.like("day-%"), p.like("wk-%")),
+            func.to_char(
+                func.to_date(func.substr(p, func.strpos(p, "-") + 1, 10), "YYYY-MM-DD"),
+                "FMMon FMDD FMMonth YYYY FMMon FMDD, YYYY",
+            ),
+        ),
+        (
+            p.op("~")(r"^\d{4}-\d{2}$"),
+            func.to_char(func.to_date(func.concat(p, "-01"), "YYYY-MM-DD"), "FMMon FMMonth YYYY"),
+        ),
+        else_="",
+    )
+    return func.concat_ws(
+        " ",
+        User.name,
+        type_label,
+        category_label,
+        period_label,
+        day_words,
+        func.coalesce(Reward.name, ""),
+        func.coalesce(LedgerEntry.note, ""),
+    )
+
+
 @app.get("/api/ledger", dependencies=[Depends(current_user)])
 def ledger(
     player: str | None = None,
     type: str | None = Query(None, pattern="^(earn|redeem|adjust)$"),
+    month: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    q: str | None = Query(None, max_length=100),
+    before: int | None = Query(None, ge=1),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_session),
 ):
-    q = (
+    """The points history, newest first. Filters combine. `before` is the id of
+    the oldest entry you already have, to fetch the next page."""
+    stmt = (
         select(LedgerEntry, User.name, Reward.name)
         .join(User, User.id == LedgerEntry.user_id)
         .outerjoin(Reward, Reward.id == LedgerEntry.reward_id)
@@ -854,10 +924,23 @@ def ledger(
         .limit(limit)
     )
     if player:
-        q = q.where(User.name == player.strip().lower())
+        stmt = stmt.where(User.name == player.strip().lower())
     if type:
-        q = q.where(LedgerEntry.type == type)
-    return [_entry_json(e, p, rw) for e, p, rw in db.execute(q).all()]
+        stmt = stmt.where(LedgerEntry.type == type)
+    if month:
+        stmt = stmt.where(_earned_month() == month)
+    if q and q.strip():
+        stmt = stmt.where(_searchable_text().ilike(_like_pattern(q), escape="\\"))
+    if before:
+        stmt = stmt.where(LedgerEntry.id < before)
+    return [_entry_json(e, p, rw) for e, p, rw in db.execute(stmt).all()]
+
+
+@app.get("/api/ledger/months", dependencies=[Depends(current_user)])
+def ledger_months(db: Session = Depends(get_session)):
+    """Months that have any history, newest first, for the month filter."""
+    sub = select(_earned_month().label("m")).subquery()
+    return list(db.scalars(select(sub.c.m).distinct().order_by(sub.c.m.desc())).all())
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +978,19 @@ def _load_days(db: Session, start: dt.date, end: dt.date) -> dict[int, dict[dt.d
     return out
 
 
+def _pay_days(db: Session, users, book: GoalBook, days, dates) -> None:
+    """Write each day's own ledger rows (calorie tier, workout day), stamped with
+    that day. Days that already have a row are left alone, so this is safe to call
+    for a week that was partly paid as its days settled."""
+    for d in dates:
+        period = f"day-{d.isoformat()}"
+        for u in users:
+            minutes, calories = days.get(u.id, {}).get(d, (0, 0))
+            cal_pts, workout_pts = scoring.score_day(minutes, calories, book.at(u.id, d))
+            _add_earn(db, u.id, period, "calorie_daily", cal_pts)
+            _add_earn(db, u.id, period, "workout_day", workout_pts)
+
+
 def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak: int) -> int:
     """Write one week's ledger rows and its scoring_periods marker. Returns the
     pair's new streak."""
@@ -908,8 +1004,10 @@ def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak
     streak = prev_streak + 1 if pair_ok else 0
     mult = scoring.multiplier_for(streak)
 
-    # Daily points may already have been paid as days settled (period day-...).
-    # Pay only what is still owed, so the week's total is the same either way.
+    # Any day of this week not yet paid gets its own row now (a bulk catch-up reads
+    # the same as live days). Then anything that ROSE after its day was paid, such
+    # as a late sync, is added once as a "Late Update" under the week.
+    _pay_days(db, users, book, days, scoring.week_days(monday))
     paid = {
         (r.user_id, r.category): int(r.pts)
         for r in db.execute(
@@ -930,9 +1028,19 @@ def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak
         w = weeks[u.id]
         for category in ("calorie_daily", "calorie_weekly", "workout_day", "workout_goal"):
             owed = getattr(w, category) - paid.get((u.id, category), 0)
-            _add_earn(db, u.id, period, category, owed)
+            if category == "calorie_weekly":
+                note = f"{w.calorie_days_hit} of 7 Days"
+            elif category in ("calorie_daily", "workout_day"):
+                note = "Late Update"  # only ever a top-up; the days have their own rows
+            else:
+                note = None
+            _add_earn(db, u.id, period, category, owed, note=note)
         extra = scoring.scaled(w.subtotal, mult) - w.subtotal
-        _add_earn(db, u.id, period, "multiplier", extra, note=f"x{mult} (streak {streak})")
+        weeks_word = "Week" if streak == 1 else "Weeks"
+        _add_earn(
+            db, u.id, period, "multiplier", extra,
+            note=f"x{mult} ({streak} {weeks_word} in a Row)",
+        )
 
     if pair_ok:
         total = scoring.scaled(scoring.TEAM_BONUS, mult)
@@ -957,15 +1065,8 @@ def _pay_settled_days(db: Session, users, book: GoalBook, first_monday: dt.date,
     if last_day < first_monday:
         return
     days = _load_days(db, first_monday, last_day)
-    d = first_monday
-    while d <= last_day:
-        period = f"day-{d.isoformat()}"
-        for u in users:
-            minutes, calories = days.get(u.id, {}).get(d, (0, 0))
-            cal_pts, workout_pts = scoring.score_day(minutes, calories, book.at(u.id, d))
-            _add_earn(db, u.id, period, "calorie_daily", cal_pts)
-            _add_earn(db, u.id, period, "workout_day", workout_pts)
-        d += dt.timedelta(days=1)
+    n = (last_day - first_monday).days + 1
+    _pay_days(db, users, book, days, [first_monday + dt.timedelta(days=i) for i in range(n)])
 
 
 def _score_month(db: Session, users, book: GoalBook, month: str) -> None:
@@ -979,7 +1080,10 @@ def _score_month(db: Session, users, book: GoalBook, month: str) -> None:
             for day, (_, cal) in days.get(u.id, {}).items()
             if cal >= book.at(u.id, day).min_calories
         )
-        _add_earn(db, u.id, month, "calorie_monthly", scoring.monthly_points(hit, n))
+        _add_earn(
+            db, u.id, month, "calorie_monthly", scoring.monthly_points(hit, n),
+            note=f"{hit} of {n} Days ({round(hit * 100 / n)}%)",
+        )
     db.add(ScoringPeriod(period=month, kind="month"))
 
 

@@ -81,7 +81,7 @@ TEST_DATABASE_URL=postgresql://user:password@other-host/other-dbname
 ```
 
 `TEST_DATABASE_URL` must be a **different, throwaway database** (for example a Neon
-branch). The tests and the demo script wipe it.
+branch). The tests wipe it. (The demo data lives in its own database, see below.)
 
 Run the app:
 
@@ -125,18 +125,34 @@ same database as `DATABASE_URL`. GitHub Actions runs them on every push
 
 ## Demo data
 
-[seed_demo.py](seed_demo.py) fills the **test** database with three fake people and about
+[seed_demo.py](seed_demo.py) fills a **demo** database with six fake people and about
 eight weeks of activity, and scores it, so you can see the calendar, charts, and rewards
 without touching real data. Use it for UI work or to try things like many users.
 
-```powershell
-.\venv\Scripts\python.exe seed_demo.py
+Give the demo its own database so running the tests never wipes it (for example a Neon
+branch named `demo`, set to never auto-delete, created as schema only), and add it to `.env`:
+
+```
+DEMO_DATABASE_URL=postgresql://user:password@demo-host/dbname
 ```
 
-It wipes the test database first and refuses to run against `DATABASE_URL`. It prints demo
-API keys and the commands to start the server pointed at the demo data. Add or change
-people in the `PEOPLE` list at the top of the script. Running the tests wipes the demo
-data again, so re-run the script afterwards.
+Seed it, then start the server pointed at it (these commands only affect that PowerShell
+window):
+
+```powershell
+.\venv\Scripts\python.exe seed_demo.py
+
+Get-Content .env | % { if ($_ -match '^\s*DEMO_DATABASE_URL\s*=\s*(.*)$') { $env:DATABASE_URL = $Matches[1].Trim() } }
+$env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '2026-09-14'
+.\venv\Scripts\python.exe -m uvicorn main:app --reload
+```
+
+The demo API keys are fixed (`demo-a`, `demo-b`, ... one per person) so you never have to look
+them up after a re-seed; they only work against the demo database. The seed script prints the exact start commands (including the
+`SCORING_START_DATE` to use, which depends on today's date) each time it runs. It wipes the
+demo database first and refuses to run against `DATABASE_URL`. Add or change people in the
+`PEOPLE` list at the top of the script. If `DEMO_DATABASE_URL` is not set it falls back to
+`TEST_DATABASE_URL`, which the tests wipe, so you would have to re-seed after every test run.
 
 ## Project layout
 
