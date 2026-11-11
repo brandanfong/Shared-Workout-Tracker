@@ -387,3 +387,16 @@ def test_late_update_is_labelled(client, auth, players, put):
     late = [e for e in ledger_rows(client, auth) if e["note"] == "Late Update"]
     assert len(late) == 1 and late[0]["points"] == 1
     assert late[0]["what"].startswith("Daily Calorie Goal Reached: Late Update \u00b7 Week of Nov 2")
+
+
+def test_people_without_goals_earn_nothing_and_do_not_block_the_team(client, headers, put):
+    # brandan sets goals; partner never does. Only brandan is scored.
+    client.patch("/api/me/settings", headers=headers("brandan"),
+                 json={"min_calories": 500, "weekly_workouts": 4})
+    headers("partner")
+    good_week(put)
+    score(D(2026, 11, 12))
+    with Session(engine) as db:
+        names = {u.id: u.name for u in db.scalars(select(User))}
+        earners = {names[e.user_id] for e in db.scalars(select(main.LedgerEntry))}
+    assert earners == {"brandan"}

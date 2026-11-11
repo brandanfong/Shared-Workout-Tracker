@@ -21,7 +21,8 @@ def test_activity_requires_key(client):
     assert client.get("/api/activity").status_code == 401
 
 
-def test_workout_day_needs_both_thresholds(client, auth, log):
+def test_workout_day_needs_both_thresholds(client, auth, log, set_goals):
+    set_goals("brandan")
     log(date="2026-11-01", minutes=30, calories=400)  # exactly on both thresholds
     log(date="2026-11-02", minutes=45, calories=300)  # calories too low
     log(date="2026-11-03", minutes=20, calories=500)  # minutes too low
@@ -59,7 +60,8 @@ def test_calendar_lists_users_even_without_rows_that_month(client, auth, log):
     assert data["days"] == {}
 
 
-def test_calendar_separates_users(client, auth, log):
+def test_calendar_separates_users(client, auth, log, set_goals):
+    set_goals("brandan", "sam")
     log(as_user="brandan", date="2026-11-05", minutes=45, calories=400)
     log(as_user="sam", date="2026-11-05", minutes=10, calories=100)
     day = client.get("/api/calendar?month=2026-11", headers=auth).json()["days"]["2026-11-05"]
@@ -80,7 +82,8 @@ def test_activity_respects_days_window(client, auth, log):
     assert [r["date"] for r in data] == [today.isoformat()]
     assert data[0]["name"] == "brandan"
 
-def test_calendar_marks_partial_days(client, headers, log):
+def test_calendar_marks_partial_days(client, headers, log, set_goals):
+    set_goals("brandan")
     # defaults: 30 min and 400 cal. A workout day needs both.
     log(as_user="brandan", date="2026-11-02", minutes=45, calories=500)   # both
     log(as_user="brandan", date="2026-11-03", minutes=10, calories=500)   # calories only

@@ -5,8 +5,8 @@ def test_me_returns_default_goals(client, auth):
     r = client.get("/api/me", headers=auth)
     assert r.status_code == 200
     assert r.json() == {"name": "brandan", "min_minutes": 30, "min_calories": 400,
-                        "weekly_workouts": 2, "scoring_enabled": True,
-                        "color": "#3b82f6"}
+                        "weekly_workouts": 2, "goals_set": False,
+                        "scoring_enabled": True, "color": "#3b82f6"}
 
 
 def test_me_requires_key(client):
@@ -79,9 +79,10 @@ def test_calendar_uses_each_persons_own_goals(client, headers, log):
     data = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()
     day = data["days"]["2026-11-08"]
     assert day["brandan"]["workout"] is True   # his goal is 200 calories
-    assert day["sam"]["workout"] is False      # her goal is still the default 400
+    assert day["sam"]["workout"] is False      # she has no goals yet, so nothing is judged
+    assert day["sam"]["goals_set"] is False
     assert data["goals"]["brandan"]["min_calories"] == 200
-    assert data["goals"]["sam"]["min_calories"] == 400
+    assert data["goals"]["sam"] is None
 
 
 def test_calendar_lists_goals_for_people_with_no_activity(client, headers):
@@ -161,3 +162,35 @@ def test_calendar_sends_the_everyone_color(client, headers):
 def test_cannot_pick_the_everyone_color(client, auth):
     r = client.patch("/api/me/color", json={"color": "#16a34a"}, headers=auth)
     assert r.status_code == 422 and "everyone" in r.json()["detail"]
+
+
+def test_me_reports_goals_set_after_first_save(client, auth):
+    assert client.get("/api/me", headers=auth).json()["goals_set"] is False
+    client.patch("/api/me/settings", json={"min_minutes": 45}, headers=auth)
+    assert client.get("/api/me", headers=auth).json()["goals_set"] is True
+
+
+def test_calendar_hides_judgement_until_goals_are_set(client, headers, log, set_goals):
+    set_goals("brandan")
+    log(as_user="brandan", minutes=60, calories=900)
+    log(as_user="sam", minutes=60, calories=900)
+    data = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()
+    day = data["days"]["2026-11-08"]
+    assert day["brandan"]["workout"] is True
+    sam = day["sam"]
+    assert sam["exercise_minutes"] == 60 and sam["active_calories"] == 900  # raw data still shown
+    assert (sam["workout"], sam["calorie_hit"], sam["minutes_hit"]) == (False, False, False)
+    assert data["goals"]["sam"] is None
+
+
+# ---------- automatic colors stay put ----------
+
+
+def test_new_people_get_the_first_free_color_in_order_added(client, headers):
+    # Alex, then Carl, then Bruce: Bruce sorts between them but must not take Carl's color.
+    alex = client.get("/api/me", headers=headers("alex")).json()["color"]
+    carl = client.get("/api/me", headers=headers("carl")).json()["color"]
+    bruce = client.get("/api/me", headers=headers("bruce")).json()["color"]
+    assert len({alex, carl, bruce}) == 3
+    assert client.get("/api/me", headers=headers("carl")).json()["color"] == carl
+    assert client.get("/api/me", headers=headers("alex")).json()["color"] == alex

@@ -75,6 +75,19 @@ def headers(make_key):
 
 
 @pytest.fixture
+def set_goals(client, headers):
+    """Give people goals (the defaults unless overridden). Until someone has set
+    goals nothing is judged or scored for them."""
+
+    def _set(*names, **goals):
+        body = {"min_minutes": 30, "min_calories": 400, "weekly_workouts": 2, **goals}
+        for name in names:
+            client.patch("/api/me/settings", json=body, headers=headers(name))
+
+    return _set
+
+
+@pytest.fixture
 def auth(headers):
     return headers("brandan")
 

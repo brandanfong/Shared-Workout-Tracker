@@ -131,6 +131,15 @@
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
   .tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); font-weight: 600; }
   .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .card.setup { border-left: 5px solid var(--accent); }
+  .card.setup h2 { margin: 0 0 12px; font-size: 1.15rem; }
+  .setup-own { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  .setup-own label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; flex: 1 1 170px; max-width: 240px; }
+  .setup-own input { width: 110px; }
+  .setup-own .hint { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
+  .setup-own button { align-self: flex-end; }
+  .card.setup .status { margin-top: 8px; }
+  .setup-note { font-size: 0.85rem; margin-top: 12px; }
   .banner.error { background: #fee2e2; color: #7f1d1d; border-color: #dc2626; }
   @media (prefers-color-scheme: dark) { .banner.error { background: #450a0a; color: #fecaca; border-color: #b91c1c; } }
   .banner button { margin-left: 8px; }
@@ -181,6 +190,20 @@
   </nav>
 
   <section id="tab-dashboard" class="tab-panel">
+  <div class="card setup" id="goalSetup" hidden>
+    <h2>Set your goals to start earning points</h2>
+    <div class="setup-own">
+      <label>Minutes per day <input id="setupMinutes" type="number" min="1" max="1440">
+        <span class="hint">Exercise minutes needed for a workout day.</span></label>
+      <label>Calories per day <input id="setupCalories" type="number" min="1" max="20000">
+        <span class="hint">Active calories needed for a workout day. Hitting it also earns daily calorie points.</span></label>
+      <label>Workouts per week <input id="setupWeekly" type="number" min="1" max="7">
+        <span class="hint">Workout days to aim for each week. Hitting it earns a weekly bonus.</span></label>
+      <button class="primary" id="reviewGoals">Review and save</button>
+    </div>
+    <div class="muted setup-note">Starts at the default goals. You can change them later in Settings.</div>
+    <div class="status" id="setupStatus"></div>
+  </div>
   <div class="dash">
   <div class="card">
     <div class="card-head">
@@ -380,6 +403,8 @@ const METRICS = {
 let calMetric = 'workout';
 let myName = '';  // the signed-in person, set when /api/me loads
 try { const saved = localStorage.getItem(METRIC_KEY); if (saved && METRICS[saved]) calMetric = saved; } catch (e) {}
+// People who have set goals. Only they can "hit" anything or count toward Everyone.
+function rated() { return USERS.filter((u) => cal.goals && cal.goals[u]); }
 function hitsMetric(e) { return !!(e && METRICS[calMetric].hit(e)); }
 const PALETTE = ['#3b82f6', '#f97316', '#a855f7', '#ec4899', '#eab308', '#14b8a6'];
 const charts = {};
@@ -458,7 +483,7 @@ function equalAreaStops(n) {
 }
 
 function cellBackground(did) {
-  const n = USERS.length;
+  const n = rated().length;
   if (!did.length) return '';
   if (n > 1 && did.length === n) return cal.everyone_color;
   if (did.length === 1) return colorOf(did[0]);
@@ -480,7 +505,7 @@ function showDetail(iso, entry) {
   const when = new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
-  const everyone = USERS.length > 1 && USERS.every((u) => hitsMetric(entry[u]));
+  const everyone = rated().length > 1 && rated().every((u) => hitsMetric(entry[u]));
   box.appendChild(el('div', 'detail-title', (everyone ? '\u2605 ' : '') + when));
   USERS.forEach((u) => {
     const e = entry[u];
@@ -494,7 +519,8 @@ function showDetail(iso, entry) {
       row.appendChild(el('span', 'vals', 'no data'));
     } else {
       row.appendChild(el('span', 'vals', e.exercise_minutes + ' min  ·  ' + e.active_calories + ' cal'));
-      if (e.workout) row.appendChild(el('span', 'badge', METRICS.workout.label));
+      if (!e.goals_set) row.appendChild(el('span', 'badge soft', 'Goals not set'));
+      else if (e.workout) row.appendChild(el('span', 'badge', METRICS.workout.label));
       else if (e.calorie_hit) row.appendChild(el('span', 'badge soft', METRICS.calories.label + ' Only'));
       else if (e.minutes_hit) row.appendChild(el('span', 'badge soft', METRICS.minutes.label + ' Only'));
     }
@@ -536,7 +562,7 @@ function renderCalendar() {
     grid.appendChild(el);
   }
 
-  const n = USERS.length;
+  const n = rated().length;
   const counts = {};
   USERS.forEach((u) => { counts[u] = 0; });
   let allCount = 0;
@@ -583,7 +609,9 @@ function renderCalendar() {
     item.appendChild(sw);
     item.appendChild(document.createTextNode(cap(u)));
     if (u === myName) item.appendChild(el('span', 'you', 'You'));
-    item.appendChild(document.createTextNode(': ' + counts[u]));
+    // No goals yet means nothing to count: N/A, not 0, and they're left out of "Everyone".
+    item.appendChild(document.createTextNode(': ' + (cal.goals && cal.goals[u] ? counts[u] : 'N/A')));
+    if (!(cal.goals && cal.goals[u])) item.title = cap(u) + ' has not set goals yet, so no days are counted.';
     const toggle = () => legendClick(
       'cal',
       u,
@@ -619,14 +647,13 @@ function renderCalendar() {
   box.appendChild(el('div', 'muted', METRICS[calMetric].note));
   USERS.forEach((u) => {
     const g = cal.goals[u];
-    if (!g) return;
     const row = el('div', 'goal-row');
     const dot = el('span', 'sw');
     dot.style.background = colorOf(u);
     row.appendChild(dot);
     row.appendChild(el('strong', null, cap(u)));
     if (u === myName) row.appendChild(el('span', 'you', 'You'));
-    row.appendChild(el('span', 'goal-vals', METRICS[calMetric].goal(g)));
+    row.appendChild(el('span', 'goal-vals', g ? METRICS[calMetric].goal(g) : 'Not set yet'));
     box.appendChild(row);
   });
 }
@@ -819,7 +846,7 @@ function buildChart(canvasId, field, goalKey, rows, opts) {
     const entryName = cap(name);
 
     // Daily values: dots only, no connecting line.
-    // Filled = at or above your goal, hollow = below it.
+    // Filled = at or above your goal, hollow = below it. No goal set yet: all filled.
     if (opts.dots) {
       datasets.push({
         label: opts.avg ? cap(name) + ' (Daily)' : entryName,
@@ -829,7 +856,7 @@ function buildChart(canvasId, field, goalKey, rows, opts) {
         showLine: false,
         borderColor: color,
         pointBorderColor: color,
-        pointBackgroundColor: values.map((v) => (v !== null && goal !== null && v >= goal ? color : hollow)),
+        pointBackgroundColor: values.map((v) => (v !== null && (goal === null || v >= goal) ? color : hollow)),
         pointBorderWidth: 2, pointRadius: 3.5, pointHoverRadius: 5,
       });
     }
@@ -1002,6 +1029,29 @@ async function loadCharts() {
 
 /* ---------- My goals ---------- */
 
+// First-time goal setup: either the defaults or their own numbers, with a confirm.
+function goalsValid(m, c, w) {
+  return m >= 1 && m <= 1440 && c >= 1 && c <= 20000 && w >= 1 && w <= 7;
+}
+async function saveFirstGoals(m, c, w) {
+  say('setupStatus', 'Saving...');
+  try {
+    const res = await fetch('/api/me/settings', {
+      method: 'PATCH',
+      headers: { 'X-API-Key': getKey(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_minutes: m, min_calories: c, weekly_workouts: w }),
+    });
+    if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    say('setupStatus', '');
+    await loadMe();
+    await loadCalendar();
+    renderCharts();
+  } catch (e) {
+    say('setupStatus', 'Could not save. Try again in a moment.', true);
+  }
+}
+
 async function loadMe() {
   try {
     const me = await apiGet('/api/me');
@@ -1013,6 +1063,12 @@ async function loadMe() {
     $('goalCalories').value = me.min_calories;
     $('goalWeekly').value = me.weekly_workouts;
     $('pausedBanner').hidden = !!me.scoring_enabled;
+    if (!me.goals_set) {
+      $('setupMinutes').value = me.min_minutes;
+      $('setupCalories').value = me.min_calories;
+      $('setupWeekly').value = me.weekly_workouts;
+    }
+    $('goalSetup').hidden = !!me.goals_set;
     $('whoami').textContent = 'Signed in as ' + cap(me.name);
     $('keyOwner').textContent = 'This device is signed in as ' + cap(me.name) + '.';
   } catch (e) {
@@ -1439,6 +1495,17 @@ function toggleSeries(changedId) {
 $('showDots').addEventListener('change', () => toggleSeries('showDots'));
 $('showAvg').addEventListener('change', () => toggleSeries('showAvg'));
 $('saveGoals').addEventListener('click', saveGoals);
+$('reviewGoals').addEventListener('click', () => {
+  const m = parseInt($('setupMinutes').value, 10);
+  const c = parseInt($('setupCalories').value, 10);
+  const w = parseInt($('setupWeekly').value, 10);
+  if (!goalsValid(m, c, w)) {
+    say('setupStatus', 'Enter minutes (1 to 1440), calories (1 to 20000) and workouts per week (1 to 7).', true);
+    return;
+  }
+  if (!confirm('Save these goals?\n\n' + m + ' minutes and ' + c + ' calories per day, ' + w + ' workouts per week.\n\nThey count for scoring.')) return;
+  saveFirstGoals(m, c, w);
+});
 $('showGoals').addEventListener('change', () => { saveChartPrefs(); renderCharts(); });
 (function initMetric() {
   const sel = $('calMetric');

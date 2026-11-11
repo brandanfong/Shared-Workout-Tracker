@@ -47,6 +47,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String, unique=True)
     # Chosen display color (#rrggbb). None means "automatic".
     color: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The automatic color, given once when the person is created and never
+    # changed, so adding someone later can't shuffle everyone else's color.
+    auto_color: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ApiKey(Base):
@@ -241,6 +244,27 @@ def migrate_user_color() -> None:
 migrate_user_color()
 
 
+def migrate_auto_color() -> None:
+    """Add users.auto_color and give existing people the automatic color they
+    already see (their place in the alphabetical list), so nothing changes
+    for them. Safe to run on every startup: only fills people who have none."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_color VARCHAR"))
+    with Session(engine) as db:
+        users = db.scalars(select(User).order_by(User.name)).all()
+        palette = colors.DEFAULT_PALETTE
+        changed = False
+        for i, u in enumerate(users):
+            if u.auto_color is None:
+                u.auto_color = palette[i % len(palette)]
+                changed = True
+        if changed:
+            db.commit()
+
+
+migrate_auto_color()
+
+
 def migrate_user_settings() -> None:
     """One-time: copy the old single-row-per-person user_settings into the goal
     history as their starting version. Safe to run on every startup. The old
@@ -296,7 +320,7 @@ def issue_key(db: Session, name: str, label: str | None = None) -> str:
     name = name.strip().lower()
     user = db.scalar(select(User).where(User.name == name))
     if user is None:
-        user = User(name=name)
+        user = User(name=name, auto_color=next_free_color(db))
         db.add(user)
         db.flush()
     key = secrets.token_urlsafe(32)
@@ -360,12 +384,16 @@ def load_goal_book(db: Session) -> GoalBook:
     return GoalBook(db.scalars(select(UserGoal)).all())
 
 
-def effective_goals(db: Session, day: dt.date | None = None) -> dict[str, dict]:
-    """Goals in force today (or on `day`) for every person."""
+def effective_goals(db: Session, day: dt.date | None = None) -> dict[str, dict | None]:
+    """Goals in force today (or on `day`) for every person. None for someone
+    who has not set goals yet: nothing is judged or scored for them until they do."""
     day = day or _today()
     book = load_goal_book(db)
     users = db.execute(select(User.id, User.name).order_by(User.name)).all()
-    return {u.name: goal_dict(book.at(u.id, day)) for u in users}
+    return {
+        u.name: goal_dict(book.at(u.id, day)) if book.latest(u.id) is not None else None
+        for u in users
+    }
 
 
 def next_monday(day: dt.date) -> dt.date:
@@ -421,9 +449,12 @@ def log(
 @app.get("/api/me")
 def me(user: User = Depends(current_user), db: Session = Depends(get_session)):
     """Your goals as they stand today, and whether scoring is switched on."""
+    book = load_goal_book(db)
     return {
         "name": user.name,
-        **goal_dict(load_goal_book(db).at(user.id, _today())),
+        **goal_dict(book.at(user.id, _today())),
+        # False until they save goals (or pick the defaults) for the first time.
+        "goals_set": book.latest(user.id) is not None,
         "scoring_enabled": SCORING_ENABLED,
         "color": effective_colors(db)[user.name],
     }
@@ -470,9 +501,22 @@ def update_my_settings(
 def effective_colors(db: Session) -> dict[str, str]:
     """Everyone's display color: the one they picked, else an automatic one
     based on their position by name."""
-    users = db.execute(select(User.name, User.color).order_by(User.name)).all()
+    users = db.execute(select(User.name, User.color, User.auto_color).order_by(User.name)).all()
     palette = colors.DEFAULT_PALETTE
-    return {u.name: u.color or palette[i % len(palette)] for i, u in enumerate(users)}
+    return {
+        u.name: u.color or u.auto_color or palette[i % len(palette)]
+        for i, u in enumerate(users)
+    }
+
+
+def next_free_color(db: Session) -> str:
+    """First come, first served: the first default/preset color nobody is using
+    (or sitting too close to). If every one is taken, wrap around the palette."""
+    taken = {f"u{i}": c for i, c in enumerate(effective_colors(db).values())}
+    for c in [*colors.DEFAULT_PALETTE, *colors.PRESETS]:
+        if colors.check(c, taken) is None:
+            return c
+    return colors.DEFAULT_PALETTE[len(taken) % len(colors.DEFAULT_PALETTE)]
 
 
 class ColorIn(BaseModel):
@@ -594,14 +638,17 @@ def calendar_month(
     days: dict[str, dict] = {}
     for r in rows:
         # Each day is judged against the goals that applied on that day.
+        has_goals = book.latest(r.uid) is not None
         g = book.at(r.uid, r.date)
         days.setdefault(r.date.isoformat(), {})[r.name] = {
             "exercise_minutes": r.exercise_minutes,
             "active_calories": r.active_calories,
-            "workout": scoring.is_workout_day(r.exercise_minutes, r.active_calories, g),
+            # Nothing to judge against until they set goals.
+            "goals_set": has_goals,
+            "workout": has_goals and scoring.is_workout_day(r.exercise_minutes, r.active_calories, g),
             # The two halves of a workout day, so the calendar can show partial days.
-            "calorie_hit": r.active_calories >= g.min_calories,
-            "minutes_hit": r.exercise_minutes >= g.min_minutes,
+            "calorie_hit": has_goals and r.active_calories >= g.min_calories,
+            "minutes_hit": has_goals and r.exercise_minutes >= g.min_minutes,
         }
 
     return {
@@ -1119,11 +1166,15 @@ def run_scoring(db: Session, today: dt.date | None = None) -> list[str]:
         return []
     today = today or _today()
     _lock_ledger(db)
-    users = db.execute(select(User).order_by(User.name)).scalars().all()
+    book = load_goal_book(db)
+    # Nobody earns points (or holds up the team's week) until they have set goals.
+    users = [
+        u for u in db.execute(select(User).order_by(User.name)).scalars().all()
+        if book.latest(u.id) is not None
+    ]
     if not users:
         db.rollback()
         return []
-    book = load_goal_book(db)
     done = {
         p.period: p for p in db.scalars(select(ScoringPeriod))
     }

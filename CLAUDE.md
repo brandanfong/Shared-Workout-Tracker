@@ -72,6 +72,10 @@ Get-Content .env | % { if ($_ -match '^\s*TEST_DATABASE_URL\s*=\s*(.*)$') { $env
 .\venv\Scripts\python.exe -m pytest -q
 ```
 
+If pytest dies with `password authentication failed for user 'neondb_owner'`, the password in
+`TEST_DATABASE_URL` is stale (rotated in Neon). Copy the current connection string for the test
+branch into `.env`. Never point the tests at the real or demo URL as a workaround.
+
 Tests TRUNCATE every table in `TEST_DATABASE_URL`. It must be a throwaway DB, different from both
 the real and demo databases.
 
