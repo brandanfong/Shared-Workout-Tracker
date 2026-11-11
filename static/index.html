@@ -128,6 +128,9 @@
   .banner { background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 0.9rem; }
   @media (prefers-color-scheme: dark) { .banner { background: #451a03; color: #fde68a; border-color: #b45309; } }
   .pos { color: #059669; } .neg { color: #dc2626; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; background: none; padding: 6px 14px; color: var(--muted); font-weight: 600; }
+  .seg button.active { background: var(--accent); color: #fff; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
   .tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); font-weight: 600; }
   .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
@@ -278,7 +281,14 @@
   <div class="card">
     <div class="card-head">
       <h2>Points History</h2>
-      <div class="filters">
+      <div class="seg" role="group" aria-label="Points history view">
+        <button type="button" id="viewTable" class="active" aria-pressed="true">Table</button>
+        <button type="button" id="viewGraph" aria-pressed="false">Graph</button>
+      </div>
+    </div>
+
+    <div id="ledgerTableView">
+      <div class="filters" style="margin-bottom:10px">
         <select id="ledgerPlayer"><option value="">Everyone</option></select>
         <select id="ledgerType">
           <option value="">All Types</option>
@@ -289,16 +299,39 @@
         <select id="ledgerMonth" aria-label="Month"><option value="">All Time</option></select>
         <input type="text" id="ledgerSearch" placeholder="Search History" maxlength="100" aria-label="Search">
       </div>
+      <div class="status" id="ledgerStatus"></div>
+      <div class="table-wrap">
+        <table class="ledger">
+          <thead><tr><th>When</th><th>Who</th><th>What</th><th class="num">Points</th><th class="num">Balance</th></tr></thead>
+          <tbody id="ledgerBody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:10px"><button id="ledgerMore" hidden>Show More</button></div>
+      <div style="margin-top:10px"><a class="link" id="adjustLink">Fix a mistake (adjustment)</a></div>
     </div>
-    <div class="status" id="ledgerStatus"></div>
-    <div class="table-wrap">
-      <table class="ledger">
-        <thead><tr><th>When</th><th>Who</th><th>What</th><th class="num">Points</th><th class="num">Balance</th></tr></thead>
-        <tbody id="ledgerBody"></tbody>
-      </table>
+
+    <div id="ledgerGraphView" hidden>
+      <div class="chart-controls" style="margin-bottom:10px">
+        <label>Range
+          <select id="pointsRange">
+            <option value="30">30 Days</option>
+            <option value="90">90 Days</option>
+            <option value="all" selected>All Time</option>
+          </select>
+        </label>
+      </div>
+      <div class="status" id="pointsStatus"></div>
+      <h2 style="margin:8px 0">Points Earned</h2>
+      <div class="chart-help">
+        <div>Each line is a person's total points earned over time. Spending on rewards doesn't lower it. Tap a name in the legend to show or hide someone.</div>
+      </div>
+      <div class="chart-wrap"><canvas id="pointsChart"></canvas></div>
+      <h2 style="margin:16px 0 8px">Shared Balance</h2>
+      <div class="chart-help">
+        <div>The points available to spend. It goes up when anyone earns and down when a reward is redeemed.</div>
+      </div>
+      <div class="chart-wrap"><canvas id="balanceChart"></canvas></div>
     </div>
-    <div style="margin-top:10px"><button id="ledgerMore" hidden>Show More</button></div>
-    <div style="margin-top:10px"><a class="link" id="adjustLink">Fix a mistake (adjustment)</a></div>
   </div>
   </section>
 
@@ -1172,7 +1205,7 @@ async function loadBalance() {
   box.innerHTML = '';
   const names = Object.keys(b.earned_by);
   if (names.length) {
-    box.appendChild(el('div', 'muted', 'Earned by'));
+    box.appendChild(el('div', 'muted', 'Earned by (all time)'));
     // Two columns, filled top to bottom, balanced: 6 people = 3 + 3, 5 = 3 + 2.
     const grid = el('div', 'earned-grid');
     grid.style.gridTemplateRows = 'repeat(' + Math.ceil(names.length / 2) + ', auto)';
@@ -1438,6 +1471,121 @@ async function saveColor(color) {
   renderCharts();
 }
 
+/* ---------- Points history: table / graph ---------- */
+
+let ledgerView = 'table';
+let pointsData = null;  // { earned: [...], balance: [...] }; null until loaded
+
+function setLedgerView(view) {
+  ledgerView = view;
+  $('ledgerTableView').hidden = view !== 'table';
+  $('ledgerGraphView').hidden = view !== 'graph';
+  [['viewTable', 'table'], ['viewGraph', 'graph']].forEach(([id, v]) => {
+    $(id).classList.toggle('active', v === view);
+    $(id).setAttribute('aria-pressed', v === view);
+  });
+  if (view === 'graph') loadPointsChart();
+}
+
+async function loadPointsChart() {
+  try {
+    const data = await apiGet('/api/points-history');
+    if (!data) return;
+    pointsData = data;
+    renderPointsCharts();
+  } catch (e) {
+    say('pointsStatus', 'Could not load the graphs. Try again in a moment.', true);
+  }
+}
+
+function lineChart(canvasId, labels, datasets, legend, yLabel) {
+  if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
+  const tick = cssVar('--muted');
+  const grid = cssVar('--grid');
+  charts[canvasId] = new Chart($(canvasId), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: legend || { display: false },
+        tooltip: { callbacks: { label: (ctx) => yLabel(ctx) } },
+      },
+      scales: {
+        x: { ticks: { color: tick, maxTicksLimit: 8 }, grid: { color: grid } },
+        y: { beginAtZero: true, ticks: { color: tick, precision: 0 }, grid: { color: grid } },
+      },
+    },
+  });
+}
+
+// Two charts, same date range:
+//   Points Earned:  a running total per person; spending never lowers it.
+//   Shared Balance: the pot, up on earnings and down on redemptions.
+function renderPointsCharts() {
+  if (!pointsData) return;
+  const { earned, balance } = pointsData;
+  ['pointsChart', 'balanceChart'].forEach((id) => {
+    if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  });
+  if (!earned.length && !balance.length) { say('pointsStatus', 'No points earned yet.'); return; }
+  say('pointsStatus', '');
+
+  const today = todayStr();
+  const dates = [...earned.map((r) => r.date), ...balance.map((r) => r.date)].sort();
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  const allDays = isoRange(first, last > today ? last : today);
+
+  const range = $('pointsRange').value;
+  const from = range === 'all' ? 0 : Math.max(0, allDays.length - 1 - parseInt(range, 10));
+  const labels = allDays.slice(from);
+
+  // Points earned: running total per person since the first points ever.
+  const names = [...new Set(earned.map((r) => r.name))].sort();
+  const datasets = names.map((n) => {
+    const perDay = {};
+    earned.filter((r) => r.name === n).forEach((r) => { perDay[r.date] = r.points; });
+    let sum = 0;
+    const totals = allDays.map((d) => { sum += perDay[d] || 0; return sum; });
+    return {
+      label: cap(n), _person: n, hidden: !isShown(n),
+      data: totals.slice(from),
+      borderColor: colorOf(n), backgroundColor: colorOf(n),
+      borderWidth: 2.75, pointRadius: 0, pointHoverRadius: 4, tension: 0,
+    };
+  });
+  lineChart('pointsChart', labels, datasets, {
+    labels: { color: cssVar('--muted'), usePointStyle: true, pointStyle: 'line' },
+    onClick: (e, item, legend) => {
+      const d = legend.chart.data.datasets[item.datasetIndex];
+      // Same show/hide (and double-click to isolate) as the other charts.
+      legendClick(
+        'charts',
+        d._person,
+        () => (visiblePeople === null ? new Set(USERS) : new Set(visiblePeople)),
+        (set) => { USERS.forEach((u) => setPersonShown(u, set.has(u))); }
+      );
+    },
+  }, (ctx) => cap(ctx.dataset._person) + ': ' + ctx.parsed.y + ' pts');
+
+  // Shared balance: the last balance of each day, carried forward over quiet days.
+  const byDay = {};
+  balance.forEach((r) => { byDay[r.date] = r.balance; });
+  let current = 0;
+  const levels = allDays.map((d) => { if (d in byDay) current = byDay[d]; return current; });
+  const accent = cssVar('--accent');
+  lineChart('balanceChart', labels, [{
+    label: 'Shared balance',
+    data: levels.slice(from),
+    borderColor: accent, backgroundColor: accent,
+    borderWidth: 2.75, pointRadius: 0, pointHoverRadius: 4,
+    stepped: 'before',
+  }], null, (ctx) => 'Balance: ' + ctx.parsed.y + ' pts');
+}
+
 /* ---------- Tabs ---------- */
 
 const TABS = ['dashboard', 'rewards', 'settings'];
@@ -1454,6 +1602,7 @@ function showTab(name, updateHash = true) {
   if (updateHash && location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   // Charts drawn while hidden have no size; redraw when the tab is shown.
   if (name === 'dashboard' && chartRows.length) renderCharts();
+  if (name === 'rewards' && ledgerView === 'graph') renderPointsCharts();
 }
 
 /* ---------- Wiring ---------- */
@@ -1558,6 +1707,9 @@ $('saveColor').addEventListener('click', () => {
   saveColor(v);
 });
 $('autoColor').addEventListener('click', () => saveColor(null));
+$('viewTable').addEventListener('click', () => setLedgerView('table'));
+$('viewGraph').addEventListener('click', () => setLedgerView('graph'));
+$('pointsRange').addEventListener('change', renderPointsCharts);
 
 async function init() {
   initChartControls();

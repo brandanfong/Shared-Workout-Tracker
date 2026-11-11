@@ -1007,6 +1007,32 @@ def ledger(
     return [_entry_json(e, p, rw) for e, p, rw in db.execute(stmt).all()]
 
 
+@app.get("/api/points-history", dependencies=[Depends(current_user)])
+def points_history(db: Session = Depends(get_session)):
+    """Data for the two history charts, oldest first.
+    earned:  points earned per person per day. Redemptions and adjustments are
+             left out, same as the "Earned by" totals, so those lines only go up.
+    balance: the shared balance at the end of each day that had any activity,
+             so it moves down when rewards are redeemed."""
+    day = func.date(LedgerEntry.created_at)
+    earned = db.execute(
+        select(User.name, day.label("d"), func.sum(LedgerEntry.points).label("pts"))
+        .join(User, User.id == LedgerEntry.user_id)
+        .where(LedgerEntry.type == "earn")
+        .group_by(User.name, day)
+        .order_by(day, User.name)
+    ).all()
+    balance = db.execute(
+        select(day.label("d"), LedgerEntry.balance_after)
+        .distinct(day)
+        .order_by(day, LedgerEntry.id.desc())
+    ).all()
+    return {
+        "earned": [{"name": r.name, "date": r.d.isoformat(), "points": int(r.pts)} for r in earned],
+        "balance": [{"date": r.d.isoformat(), "balance": int(r.balance_after)} for r in balance],
+    }
+
+
 @app.get("/api/ledger/months", dependencies=[Depends(current_user)])
 def ledger_months(db: Session = Depends(get_session)):
     """Months that have any history, newest first, for the month filter."""

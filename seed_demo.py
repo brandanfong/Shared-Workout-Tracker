@@ -61,7 +61,7 @@ os.environ["DATABASE_URL"] = demo_url
 os.environ["SCORING_ENABLED"] = "true"
 os.environ["SCORING_START_DATE"] = start.isoformat()
 
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 import main  # noqa: E402
@@ -75,6 +75,53 @@ PEOPLE = {
     "demo_e": (350, 25, 4, 500, 290),
     "demo_f": (480, 45, 2, 700, 410),
 }
+
+def spread_dates(db) -> None:
+    """run_scoring stamps every entry with "now", which would put all the points on
+    one day in the history graphs. Give each earn entry the date it would really
+    have landed, add a few redemptions so the shared balance dips, then redo the
+    running balance in date order."""
+    utc = dt.timezone.utc
+    now = dt.datetime.now(utc)
+
+    def landed(period: str) -> dt.datetime:
+        if period.startswith("day-"):  # paid two days after the day
+            d = dt.date.fromisoformat(period[4:]) + dt.timedelta(days=2)
+        elif period.startswith("wk-"):  # scored the Tuesday after the week
+            d = dt.date.fromisoformat(period[3:]) + dt.timedelta(days=8)
+        else:  # "YYYY-MM": the monthly bonus, paid just after the month closes
+            y, m = map(int, period.split("-"))
+            d = dt.date(y + (m == 12), m % 12 + 1, 3)
+        return min(dt.datetime.combine(d, dt.time(12, 0), tzinfo=utc), now)
+
+    for e in db.scalars(select(main.LedgerEntry)).all():
+        if e.period:
+            e.created_at = landed(e.period)
+    db.flush()
+
+    rewards = db.scalars(select(main.Reward).order_by(main.Reward.cost)).all()
+    users = {u.name: u.id for u in db.scalars(select(main.User)).all()}
+    for days_ago, who in ((35, "demo_a"), (21, "demo_c"), (9, "demo_b")):
+        when = dt.datetime.combine(today - dt.timedelta(days=days_ago), dt.time(18, 0), tzinfo=utc)
+        bal = sum(db.scalars(select(main.LedgerEntry.points).where(main.LedgerEntry.created_at <= when)).all())
+        affordable = [r for r in rewards if r.cost <= bal * 0.6]
+        if not affordable:
+            continue
+        r = affordable[-1]
+        db.add(main.LedgerEntry(
+            type="redeem", user_id=users[who], category="redeem", points=-r.cost,
+            balance_after=0, reward_id=r.id, note=r.name, created_at=when,
+        ))
+        db.flush()
+
+    running = 0
+    for e in db.scalars(
+        select(main.LedgerEntry).order_by(main.LedgerEntry.created_at, main.LedgerEntry.id)
+    ).all():
+        running += e.points
+        e.balance_after = running
+    db.commit()
+
 
 rng = random.Random(7)
 print(f"Wiping and seeding host {main.engine.url.host} ...")
@@ -128,6 +175,7 @@ with Session(main.engine) as db:
     db.commit()
 
     scored = main.run_scoring(db, today)
+    spread_dates(db)
     balance = main.current_balance(db)
 
 print(f"Scored {len(scored)} periods; shared balance is {balance} points.\n")

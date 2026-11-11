@@ -141,6 +141,36 @@ def test_week_scores_on_tuesday_not_before(client, auth, players, put):
     assert b["balance"] == 54 and b["earned_by"] == {"brandan": 30, "partner": 24}
 
 
+def test_points_history_sums_earned_points_per_person(client, auth, players, put):
+    good_week(put)
+    score(D(2026, 11, 10))
+    data = client.get("/api/points-history", headers=auth).json()
+    totals = {}
+    for r in data["earned"]:
+        totals[r["name"]] = totals.get(r["name"], 0) + r["points"]
+    assert totals == balance(client, auth)["earned_by"]
+    assert all(set(r) == {"name", "date", "points"} for r in data["earned"])
+
+
+def test_points_history_balance_falls_when_a_reward_is_redeemed(client, auth, players, put):
+    good_week(put)
+    score(D(2026, 11, 10))
+    before = balance(client, auth)["balance"]
+    cost = 20
+    assert before >= cost
+    made = client.post("/api/rewards", json={"name": "Test treat", "cost": cost}, headers=auth)
+    assert made.status_code == 201
+    assert client.post(f"/api/rewards/{made.json()['id']}/redeem", headers=auth).status_code == 200
+    data = client.get("/api/points-history", headers=auth).json()
+    assert data["balance"][-1]["balance"] == before - cost
+    # Lifetime earnings are untouched by spending.
+    assert sum(r["points"] for r in data["earned"]) == sum(balance(client, auth)["earned_by"].values())
+
+
+def test_points_history_requires_key(client):
+    assert client.get("/api/points-history").status_code == 401
+
+
 def test_scoring_is_idempotent(client, auth, players, put):
     good_week(put)
     score(D(2026, 11, 10))
