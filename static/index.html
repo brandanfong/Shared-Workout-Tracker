@@ -33,6 +33,7 @@
   button { cursor: pointer; }
   button:disabled { opacity: 0.4; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 16px; }
   .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
   .muted { color: var(--muted); font-size: 0.85rem; }
@@ -130,6 +131,11 @@
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
   .tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); font-weight: 600; }
   .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .banner.error { background: #fee2e2; color: #7f1d1d; border-color: #dc2626; }
+  @media (prefers-color-scheme: dark) { .banner.error { background: #450a0a; color: #fecaca; border-color: #b91c1c; } }
+  .banner button { margin-left: 8px; }
+  /* Signed out: hide all data so nothing stale (or an empty-looking page) shows. */
+  body.signed-out #tabs, body.signed-out .tab-panel, body.signed-out #pausedBanner { display: none !important; }
   .tab-panel { display: none; }
   /* Side by side on wide screens; stacked on tablets and phones. min-width: 0
      lets the charts shrink with their column instead of overflowing. */
@@ -161,6 +167,8 @@
     <button class="primary" id="saveKey">Save</button>
     <span class="muted" id="authMsg"></span>
   </div>
+
+  <div class="banner" id="appNotice" hidden></div>
 
   <div class="banner" id="pausedBanner" hidden>
     <strong>Scoring is paused.</strong> Your activity is still being saved, but no points are being earned yet.
@@ -309,7 +317,7 @@
     <div class="card-head"><h2>API Key</h2></div>
     <div class="muted" style="margin-bottom:8px">This device stores your key so you stay signed in.</div>
     <div class="muted" id="keyOwner" style="margin-bottom:8px"></div>
-    <button id="changeKey">Change key</button>
+    <button id="changeKey" class="danger">Sign out</button>
   </div>
   </section>
 
@@ -404,6 +412,22 @@ function colorOf(name) {
 function showAuth(msg) {
   $('auth').style.display = 'flex';
   $('authMsg').textContent = msg;
+  document.body.classList.add('signed-out');
+  setNotice('<strong>You are not signed in.</strong> Enter your API key above to see the data.');
+}
+// Page-wide notice. isError turns it red; retry adds a Retry button.
+function setNotice(html, isError, retry) {
+  const n = $('appNotice');
+  if (!html) { n.hidden = true; n.innerHTML = ''; return; }
+  n.className = 'banner' + (isError ? ' error' : '');
+  n.innerHTML = html;
+  if (retry) {
+    const b = document.createElement('button');
+    b.textContent = 'Retry';
+    b.addEventListener('click', retry);
+    n.appendChild(b);
+  }
+  n.hidden = false;
 }
 
 async function apiGet(path) {
@@ -413,6 +437,7 @@ async function apiGet(path) {
   if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return null; }
   if (!res.ok) throw new Error('HTTP ' + res.status);
   $('auth').style.display = 'none';
+  document.body.classList.remove('signed-out');
   return res.json();
 }
 
@@ -615,9 +640,11 @@ async function loadCalendar() {
     USERS = data.users;
     renderCalendar();
     say('calStatus', '');
+    setNotice('');
     return true;
   } catch (e) {
     say('calStatus', 'Could not load data. Try again in a moment.', true);
+    setNotice('<strong>Can\'t reach the database.</strong> The server may still be waking up or is down, so the data below is empty or out of date. Your workouts are not lost.', true, init);
     return false;
   }
 }
@@ -1379,7 +1406,9 @@ $('saveKey').addEventListener('click', () => {
   const v = $('keyInput').value.trim();
   if (v) { setKey(v); $('keyInput').value = ''; init(); }
 });
-$('changeKey').addEventListener('click', () => { clearKey(); showAuth('Enter a new API key.'); });
+$('changeKey').addEventListener('click', () => {
+  if (!confirm('Sign out? You will need your API key to sign back in on this device.')) return;
+  clearKey(); showAuth('Enter a new API key.'); });
 $('prevMonth').addEventListener('click', () => {
   viewM -= 1;
   if (viewM < 1) { viewM = 12; viewY -= 1; }
