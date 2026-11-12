@@ -7,7 +7,22 @@ def _norm(url):
     return (url or "").strip().strip("'\"").replace("+psycopg", "", 1)
 
 
-TEST_URL = os.environ.get("TEST_DATABASE_URL")
+def _from_dotenv(key):
+    """Read one KEY=value line from the project's .env (main.py doesn't load it)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                name, sep, value = line.partition("=")
+                if sep and name.strip() == key:
+                    return value.strip().strip("'\"")
+    except OSError:
+        pass
+    return None
+
+
+# .env wins so a stale value left in the shell can't send tests to the wrong DB.
+TEST_URL = _from_dotenv("TEST_DATABASE_URL") or os.environ.get("TEST_DATABASE_URL")
 if not TEST_URL:
     pytest.exit(
         "Set TEST_DATABASE_URL to a throwaway database (a Neon test branch or "
@@ -83,8 +98,30 @@ def set_goals(client, headers):
         body = {"min_minutes": 30, "min_calories": 400, "weekly_workouts": 2, **goals}
         for name in names:
             client.patch("/api/me/settings", json=body, headers=headers(name))
+        backdate_goals()
 
     return _set
+
+
+def backdate_goals():
+    """A first goal save starts today, which would leave the tests' past dates
+    unjudged. Move every person's earliest goal row back to the epoch."""
+    import main
+    from sqlalchemy import func, select, update
+    from sqlalchemy.orm import Session
+
+    with Session(main.engine) as db:
+        for uid in db.scalars(select(main.UserGoal.user_id).distinct()).all():
+            first = db.scalar(
+                select(func.min(main.UserGoal.effective_from)).where(main.UserGoal.user_id == uid)
+            )
+            if first != main.EPOCH:
+                db.execute(
+                    update(main.UserGoal)
+                    .where(main.UserGoal.user_id == uid, main.UserGoal.effective_from == first)
+                    .values(effective_from=main.EPOCH)
+                )
+        db.commit()
 
 
 @pytest.fixture

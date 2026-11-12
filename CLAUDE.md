@@ -68,16 +68,49 @@ PowerShell window (or `Remove-Item Env:DATABASE_URL, Env:SCORING_ENABLED, Env:SC
 ## Tests
 
 ```powershell
-Get-Content .env | % { if ($_ -match '^\s*TEST_DATABASE_URL\s*=\s*(.*)$') { $env:TEST_DATABASE_URL = $Matches[1].Trim() } }
 .\venv\Scripts\python.exe -m pytest -q
 ```
 
-If pytest dies with `password authentication failed for user 'neondb_owner'`, the password in
-`TEST_DATABASE_URL` is stale (rotated in Neon). Copy the current connection string for the test
-branch into `.env`. Never point the tests at the real or demo URL as a workaround.
+No setup needed: `tests/conftest.py` reads `TEST_DATABASE_URL` straight from `.env` (the `.env` value wins over anything set in the shell).
+
+`TEST_DATABASE_URL` in `.env` points at a **local Postgres 17** (Windows service
+`postgresql-x64-17`, database `workout_test`, user `postgres`). The full suite (206 tests) runs in
+about 17 seconds. Tests used to run against a remote Neon branch and took ~6 minutes because every
+query was a network round trip, so don't point them at a remote DB.
+
+**New machine setup** (Postgres is a system program, not a pip package, so it isn't in
+`requirements.txt`):
+
+```powershell
+winget install --id PostgreSQL.PostgreSQL.17      # set a password for the postgres user when asked
+& 'C:\Program Files\PostgreSQL\17\bin\psql.exe' -h localhost -U postgres -c "CREATE DATABASE workout_test"
+```
+
+Then add `TEST_DATABASE_URL=postgresql://postgres:<password>@localhost:5432/workout_test` to `.env`.
+
+If pytest fails to connect, check that the service is running (`Get-Service postgresql-x64-17`;
+start it with `Start-Service postgresql-x64-17` from an admin window). Never point the tests at the
+real or demo URL as a workaround.
 
 Tests TRUNCATE every table in `TEST_DATABASE_URL`. It must be a throwaway DB, different from both
 the real and demo databases.
+
+Targeted runs are still handy while building a feature:
+
+```powershell
+.\venv\Scripts\python.exe -m pytest -q tests/test_scoring.py            # one file
+.\venv\Scripts\python.exe -m pytest -q tests/test_scoring.py::test_name # one test
+.\venv\Scripts\python.exe -m pytest -q -k scoring                       # match by name
+.\venv\Scripts\python.exe -m pytest -q --lf                             # rerun last failures
+```
+
+Run the full suite before the user confirms a feature as done or before pushing, since shared code
+(`main.py`, DB setup) can break unrelated tests.
+
+## TODO.md
+
+When the user confirms a feature is complete, remove its entry from `TODO.md`. Don't remove items
+before that confirmation, even if the code and tests look done.
 
 ## Other
 
