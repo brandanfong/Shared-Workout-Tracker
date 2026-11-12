@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (Boolean, CheckConstraint, Date, DateTime, ForeignKey,
                         Index, Integer, String, UniqueConstraint, case,
                         create_engine, func, inspect, or_, select, text)
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 import colors
@@ -379,6 +379,16 @@ class GoalBook:
         rows = self._by_user.get(user_id)
         return rows[-1][1] if rows else None
 
+    def first_day(self, user_id: int) -> dt.date | None:
+        """The day their goals first took effect. Days before it are not judged
+        or scored. None if they have not set goals."""
+        rows = self._by_user.get(user_id)
+        return rows[0][0] if rows else None
+
+    def judged(self, user_id: int, day: dt.date) -> bool:
+        first = self.first_day(user_id)
+        return first is not None and day >= first
+
 
 def load_goal_book(db: Session) -> GoalBook:
     return GoalBook(db.scalars(select(UserGoal)).all())
@@ -469,14 +479,12 @@ def update_my_settings(
     """Saves goals. Minutes and calories apply from today; each day is judged
     by the goals in force that day. The weekly workout target counts for the
     whole week you save it in and locks when that week ends. Saving again the
-    same day replaces that day's entry. Your very first save replaces the
-    defaults for all time."""
+    same day replaces that day's entry. Your first save is when you start
+    playing: days before it are not judged or scored."""
     today = _today()
     book = load_goal_book(db)
-    base = book.latest(user.id)
-    first_save = base is None
-    base = base or DEFAULT_GOALS
-    effective_from = EPOCH if first_save else today
+    base = book.latest(user.id) or DEFAULT_GOALS
+    effective_from = today
 
     merged = scoring.Goals(
         body.min_minutes if body.min_minutes is not None else base.min_minutes,
@@ -638,7 +646,7 @@ def calendar_month(
     days: dict[str, dict] = {}
     for r in rows:
         # Each day is judged against the goals that applied on that day.
-        has_goals = book.latest(r.uid) is not None
+        has_goals = book.judged(r.uid, r.date)
         g = book.at(r.uid, r.date)
         days.setdefault(r.date.isoformat(), {})[r.name] = {
             "exercise_minutes": r.exercise_minutes,
@@ -1024,7 +1032,7 @@ def points_history(db: Session = Depends(get_session)):
     ).all()
     balance = db.execute(
         select(day.label("d"), LedgerEntry.balance_after)
-        .distinct(day)
+        .ext(distinct_on(day))
         .order_by(day, LedgerEntry.id.desc())
     ).all()
     return {
@@ -1082,6 +1090,8 @@ def _pay_days(db: Session, users, book: GoalBook, days, dates) -> None:
     for d in dates:
         period = f"day-{d.isoformat()}"
         for u in users:
+            if not book.judged(u.id, d):
+                continue
             minutes, calories = days.get(u.id, {}).get(d, (0, 0))
             cal_pts, workout_pts = scoring.score_day(minutes, calories, book.at(u.id, d))
             _add_earn(db, u.id, period, "calorie_daily", cal_pts)
@@ -1092,12 +1102,23 @@ def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak
     """Write one week's ledger rows and its scoring_periods marker. Returns the
     pair's new streak."""
     period = f"wk-{monday.isoformat()}"
-    days = _load_days(db, monday, monday + dt.timedelta(days=6))
+    sunday = monday + dt.timedelta(days=6)
+    # Someone whose goals start after this week is not part of it at all. Someone
+    # who started mid-week is in their grace week: they earn their own points from
+    # their first day (and get the team bonus if the group succeeds) but are left
+    # out of the group check and the streak until the next Monday.
+    users = [u for u in users if book.first_day(u.id) <= sunday]
+    days = _load_days(db, monday, sunday)
     weeks = {
-        u.id: scoring.score_player_week(days.get(u.id, {}), monday, lambda d, uid=u.id: book.at(uid, d))
+        u.id: scoring.score_player_week(
+            {d: v for d, v in days.get(u.id, {}).items() if book.judged(u.id, d)},
+            monday,
+            lambda d, uid=u.id: book.at(uid, d),
+        )
         for u in users
     }
-    pair_ok = all(w.ok for w in weeks.values())
+    full = [u for u in users if book.first_day(u.id) <= monday]
+    pair_ok = bool(full) and all(weeks[u.id].ok for u in full)
     streak = prev_streak + 1 if pair_ok else 0
     mult = scoring.multiplier_for(streak)
 
@@ -1140,10 +1161,9 @@ def _score_week(db: Session, users, book: GoalBook, monday: dt.date, prev_streak
         )
 
     if pair_ok:
-        total = scoring.scaled(scoring.TEAM_BONUS, mult)
-        share, rem = divmod(total, len(users))
-        for i, u in enumerate(users):
-            _add_earn(db, u.id, period, "team_bonus", share + (1 if i < rem else 0))
+        bonus = scoring.scaled(scoring.TEAM_BONUS, mult)  # every member gets the full bonus
+        for u in users:
+            _add_earn(db, u.id, period, "team_bonus", bonus)
 
     db.add(
         ScoringPeriod(
@@ -1171,11 +1191,14 @@ def _score_month(db: Session, users, book: GoalBook, month: str) -> None:
     days = _load_days(db, first, last)
     n = (last - first).days + 1
     for u in users:
-        # each day is judged against the calorie goal in force that day
+        if book.first_day(u.id) > last:
+            continue  # not playing yet that month
+        # each day is judged against the calorie goal in force that day;
+        # days before their goals started do not count
         hit = sum(
             1
             for day, (_, cal) in days.get(u.id, {}).items()
-            if cal >= book.at(u.id, day).min_calories
+            if book.judged(u.id, day) and cal >= book.at(u.id, day).min_calories
         )
         _add_earn(
             db, u.id, month, "calorie_monthly", scoring.monthly_points(hit, n),
@@ -1215,7 +1238,9 @@ def run_scoring(db: Session, today: dt.date | None = None) -> list[str]:
         if period in done:
             streak = done[period].streak or 0
         else:
-            if not _day_synced(db, users, monday + dt.timedelta(days=6), today):
+            sunday = monday + dt.timedelta(days=6)
+            playing = [u for u in users if book.first_day(u.id) <= sunday]
+            if not _day_synced(db, playing, sunday, today):
                 break  # later weeks depend on this one's streak, so wait
             streak = _score_week(db, users, book, monday, streak)
             scored.append(period)
@@ -1234,7 +1259,8 @@ def run_scoring(db: Session, today: dt.date | None = None) -> list[str]:
         _, last = scoring.month_bounds(month)
         if last + dt.timedelta(days=1 + scoring.GRACE_DAYS) > today:
             break
-        if month not in done and _day_synced(db, users, last, today):
+        playing = [u for u in users if book.first_day(u.id) <= last]
+        if month not in done and _day_synced(db, playing, last, today):
             _score_month(db, users, book, month)
             scored.append(month)
         y, m = y + (m == 12), (m % 12) + 1

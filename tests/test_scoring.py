@@ -8,6 +8,7 @@ import main
 import scoring
 from main import DailyActivity, User, engine, run_scoring
 from scoring import Goals
+from conftest import backdate_goals
 from sqlalchemy import select
 
 D = dt.date
@@ -101,6 +102,7 @@ def players(client, headers):
                  json={"min_calories": 500, "weekly_workouts": 4})
     client.patch("/api/me/settings", headers=headers("partner"),
                  json={"min_calories": 400, "weekly_workouts": 2})
+    backdate_goals()
 
 
 @pytest.fixture
@@ -137,8 +139,8 @@ def test_week_scores_on_tuesday_not_before(client, auth, players, put):
     assert score(D(2026, 11, 9)) == []  # Monday after: still in the grace day
     assert score(D(2026, 11, 10)) == ["wk-2026-11-02"]
     b = balance(client, auth)
-    # 28 + 22 + 4 team bonus (split 2 and 2)
-    assert b["balance"] == 54 and b["earned_by"] == {"brandan": 30, "partner": 24}
+    # 28 + 22 + 8 team bonus (4 each)
+    assert b["balance"] == 58 and b["earned_by"] == {"brandan": 32, "partner": 26}
 
 
 def test_points_history_sums_earned_points_per_person(client, auth, players, put):
@@ -176,7 +178,7 @@ def test_scoring_is_idempotent(client, auth, players, put):
     score(D(2026, 11, 10))
     assert score(D(2026, 11, 10)) == []
     assert score(D(2026, 11, 12)) == []
-    assert balance(client, auth)["balance"] == 54
+    assert balance(client, auth)["balance"] == 58
 
 
 def test_late_data_does_not_change_a_scored_week(client, auth, players, put):
@@ -204,8 +206,8 @@ def test_streak_multiplier_applies_in_week_two(client, auth, players, put):
     good_week(put, MON + dt.timedelta(days=7))
     assert score(D(2026, 11, 17)) == ["wk-2026-11-02", "wk-2026-11-09"]
     b = balance(client, auth)
-    # week 1 = 54; week 2 at 1.1x: 31 + 24 + 4 = 59
-    assert b["balance"] == 54 + 59
+    # week 1 = 58; week 2 at 1.1x: 31 + 24 + 8 = 63
+    assert b["balance"] == 58 + 63
     cats = {e["category"] for e in client.get("/api/ledger?type=earn", headers=auth).json()}
     assert "multiplier" in cats
 
@@ -255,7 +257,7 @@ def test_log_triggers_scoring(client, auth, headers, players, put, monkeypatch):
     r = client.post("/log", json={"date": "2026-11-10", "minutes": 0, "calories": 0},
                     headers=headers("brandan"))
     assert r.status_code == 200
-    assert balance(client, auth)["balance"] == 54
+    assert balance(client, auth)["balance"] == 58
 
 
 # ---------- goal history: minutes/calories apply that day, weekly target next Monday ----------
@@ -265,13 +267,14 @@ def set_today(monkeypatch, day):
     monkeypatch.setattr(main, "_today", lambda: day)
 
 
-def test_first_save_replaces_defaults_later_saves_apply_that_day(client, auth, monkeypatch):
+def test_first_save_starts_today_later_saves_apply_that_day(client, auth, monkeypatch):
     set_today(monkeypatch, D(2026, 11, 11))  # a Wednesday
     first = client.patch("/api/me/settings", json={"min_calories": 500}, headers=auth).json()
-    assert first["effective_from"] == "1970-01-01"
+    assert first["effective_from"] == "2026-11-11"  # the past is not judged
 
+    set_today(monkeypatch, D(2026, 11, 12))
     second = client.patch("/api/me/settings", json={"min_calories": 300}, headers=auth).json()
-    assert second["effective_from"] == "2026-11-11"
+    assert second["effective_from"] == "2026-11-12"
     me = client.get("/api/me", headers=auth).json()
     assert me["min_calories"] == 300
 
@@ -291,7 +294,7 @@ def test_several_saves_in_one_day_keep_only_the_last(client, auth, monkeypatch):
         client.patch("/api/me/settings", json={"min_calories": cal}, headers=auth)
     assert client.get("/api/me", headers=auth).json()["min_calories"] == 275
     with Session(engine) as db:
-        assert len(db.scalars(select(main.UserGoal)).all()) == 2  # first + today
+        assert len(db.scalars(select(main.UserGoal)).all()) == 1  # first save is today, so one row
 
 
 def test_calendar_judges_each_day_by_the_goal_then(client, auth, log, monkeypatch):
@@ -380,7 +383,7 @@ def test_week_close_total_is_the_same_as_paying_only_at_the_end(client, auth, pl
     score(D(2026, 11, 8))
     score(D(2026, 11, 10))
     b = balance(client, auth)
-    assert b["balance"] == 54 and b["earned_by"] == {"brandan": 30, "partner": 24}
+    assert b["balance"] == 58 and b["earned_by"] == {"brandan": 32, "partner": 26}
 
 
 def test_late_increase_after_a_day_was_paid_is_topped_up_at_close(client, auth, players, put):
@@ -391,7 +394,7 @@ def test_late_increase_after_a_day_was_paid_is_topped_up_at_close(client, auth, 
             "UPDATE daily_activity SET active_calories = 1000 "
             "WHERE date = '2026-11-02' AND user_id = (SELECT id FROM users WHERE name = 'partner')"))
     score(D(2026, 11, 10))
-    assert balance(client, auth)["balance"] == 55  # 54 plus one extra tier point
+    assert balance(client, auth)["balance"] == 59  # 58 plus one extra tier point
 
 
 def test_backfilled_old_weeks_get_one_row_per_day_like_live_days(client, auth, players, put):
@@ -401,7 +404,7 @@ def test_backfilled_old_weeks_get_one_row_per_day_like_live_days(client, auth, p
     daily = [e for e in rows if e["category"] in ("calorie_daily", "workout_day")]
     assert daily and all(e["period"].startswith("day-") for e in daily)  # no week-stamped daily rows
     assert not any(e["note"] == "Late Update" for e in rows)             # nothing needed topping up
-    assert balance(client, auth)["balance"] == 54                          # same total as ever
+    assert balance(client, auth)["balance"] == 58                          # same total as ever
     keys = [(e["player"], e["period"], e["category"]) for e in rows]
     assert len(keys) == len(set(keys))
 
@@ -423,6 +426,7 @@ def test_people_without_goals_earn_nothing_and_do_not_block_the_team(client, hea
     # brandan sets goals; partner never does. Only brandan is scored.
     client.patch("/api/me/settings", headers=headers("brandan"),
                  json={"min_calories": 500, "weekly_workouts": 4})
+    backdate_goals()
     headers("partner")
     good_week(put)
     score(D(2026, 11, 12))
@@ -430,3 +434,52 @@ def test_people_without_goals_earn_nothing_and_do_not_block_the_team(client, hea
         names = {u.id: u.name for u in db.scalars(select(User))}
         earners = {names[e.user_id] for e in db.scalars(select(main.LedgerEntry))}
     assert earners == {"brandan"}
+
+
+# ---------- grace week and flat team bonus ----------
+
+
+def test_goals_start_the_day_they_are_saved_earlier_days_score_nothing(client, headers, put, monkeypatch):
+    # brandan joins on Wednesday Nov 4 (grace week of Nov 2); partner has played all along.
+    client.patch("/api/me/settings", headers=headers("partner"),
+                 json={"min_calories": 400, "weekly_workouts": 2})
+    backdate_goals()
+    set_today(monkeypatch, D(2026, 11, 4))
+    client.patch("/api/me/settings", headers=headers("brandan"),
+                 json={"min_calories": 500, "weekly_workouts": 4})
+    good_week(put)
+    score(D(2026, 11, 10))
+    with Session(engine) as db:
+        rows = db.scalars(select(main.LedgerEntry).where(main.LedgerEntry.type == "earn")).all()
+        names = {u.id: u.name for u in db.scalars(select(User))}
+    mine = [r for r in rows if names[r.user_id] == "brandan"]
+    # No daily points for Mon Nov 2 or Tue Nov 3, and the group still succeeded.
+    assert not any(r.period in ("day-2026-11-02", "day-2026-11-03") for r in mine)
+    assert any(r.period == "day-2026-11-04" for r in mine)
+    # The newcomer gets the team bonus even though their own week was partial.
+    assert any(r.category == "team_bonus" for r in mine)
+    assert sum(1 for r in rows if r.category == "team_bonus") == 2
+
+
+def test_newcomer_in_grace_week_does_not_block_the_group_or_streak(client, headers, put, monkeypatch):
+    client.patch("/api/me/settings", headers=headers("partner"),
+                 json={"min_calories": 400, "weekly_workouts": 2})
+    backdate_goals()
+    set_today(monkeypatch, D(2026, 11, 8))  # Sunday: one day left of the week
+    client.patch("/api/me/settings", headers=headers("brandan"),
+                 json={"min_calories": 500, "weekly_workouts": 4})
+    put("partner", MON, [(45, 450)] * 7)  # partner has a perfect week
+    put("brandan", MON, [(0, 0)] * 7)     # brandan's week is empty
+    score(D(2026, 11, 10))
+    with Session(engine) as db:
+        wk = db.scalar(select(main.ScoringPeriod).where(main.ScoringPeriod.period == "wk-2026-11-02"))
+    assert wk.pair_ok is True and wk.streak == 1
+
+
+def test_team_bonus_is_the_full_amount_for_every_member(client, auth, players, put):
+    good_week(put)
+    score(D(2026, 11, 10))
+    with Session(engine) as db:
+        bonuses = [r.points for r in db.scalars(
+            select(main.LedgerEntry).where(main.LedgerEntry.category == "team_bonus"))]
+    assert bonuses == [4, 4]

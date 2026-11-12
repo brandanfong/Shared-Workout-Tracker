@@ -1,4 +1,7 @@
+import datetime as dt
+
 import pytest
+from conftest import backdate_goals
 
 
 def test_me_returns_default_goals(client, auth):
@@ -24,7 +27,7 @@ def test_update_goals(client, auth):
     )
     assert r.status_code == 200
     assert r.json() == {"name": "brandan", "min_minutes": 45, "min_calories": 500,
-                        "weekly_workouts": 2, "effective_from": "1970-01-01"}
+                        "weekly_workouts": 2, "effective_from": dt.date.today().isoformat()}
     me = client.get("/api/me", headers=auth).json()
     assert (me["min_minutes"], me["min_calories"]) == (45, 500)
 
@@ -73,6 +76,7 @@ def test_invalid_goals_are_rejected(client, auth, body):
 
 def test_calendar_uses_each_persons_own_goals(client, headers, log):
     client.patch("/api/me/settings", json={"min_calories": 200}, headers=headers("brandan"))
+    backdate_goals()
     log(as_user="brandan", minutes=45, calories=250)
     log(as_user="sam", minutes=45, calories=250)
 
