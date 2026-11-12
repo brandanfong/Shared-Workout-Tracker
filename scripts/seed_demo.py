@@ -55,7 +55,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from app.auth import hash_key  # noqa: E402
 from app.db import engine  # noqa: E402
 from app.ledger import current_balance  # noqa: E402
-from app.migrations import seed_rewards, setup_database  # noqa: E402
+from app.setup_db import seed_rewards, setup_database  # noqa: E402
 from app.models import EPOCH, ApiKey, DailyActivity, LedgerEntry, Reward, User, UserGoal  # noqa: E402
 from app.scoring_runner import run_scoring  # noqa: E402
 

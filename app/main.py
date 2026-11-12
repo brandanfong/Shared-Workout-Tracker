@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from app import config
-from app.migrations import setup_database
+from app.setup_db import setup_database
 from app.routers import activity, me, points, rewards
 
 app = FastAPI(title="Shared Workout Tracker")

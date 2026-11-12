@@ -70,7 +70,7 @@ Targeted runs are still handy while building a feature:
 ```
 
 Run the full suite before the user confirms a feature as done or before pushing, since shared code
-(`app/db.py`, `app/migrations.py`, `tests/conftest.py`) can break unrelated tests.
+(`app/db.py`, `app/setup_db.py`, `tests/conftest.py`) can break unrelated tests.
 
 ## TODO.md
 
@@ -81,6 +81,10 @@ before that confirmation, even if the code and tests look done.
 
 - New API key: `.\venv\Scripts\python.exe scripts\create_key.py <name> "<label>"` (uses `DATABASE_URL` from env or `.env`).
 - Code lives in the `app/` package (endpoints in `app/routers/`); one-off CLI scripts live in `scripts/`.
+- Schema changes go through Alembic: edit `app/models.py`, then
+  `.\venv\Scripts\alembic.exe revision --autogenerate -m "..."` and review the file in `alembic/versions/`.
+  Never use `create_all` or hand-written `ALTER TABLE` at startup. The app runs `alembic upgrade head` on
+  startup (`app/setup_db.py`); tests rebuild the test DB through the migrations each run.
 - Settings and "today" live in `app/config.py`. Read them as `config.SCORING_ENABLED` / `config.today()`,
   not `from app.config import ...`, so tests can monkeypatch them in one place.
 - More detail (settings table, API, layout): see README.md.

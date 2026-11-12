@@ -91,7 +91,7 @@ Run the app:
 ```
 
 Then open http://127.0.0.1:8000. Settings come from `.env`, so nothing needs setting in
-PowerShell first. Tables are created automatically on startup. Options: `--port 8001`,
+PowerShell first. The database is created/updated automatically on startup (see Database changes below). Options: `--port 8001`,
 `--no-reload`.
 
 ### Give each person an API key
@@ -154,6 +154,27 @@ demo database first and refuses to run against `DATABASE_URL`. Add or change peo
 `PEOPLE` list at the top of the script. If `DEMO_DATABASE_URL` is not set it falls back to
 `TEST_DATABASE_URL`, which the tests wipe, so you would have to re-seed after every test run.
 
+## Database changes (Alembic)
+
+The tables are defined in [app/models.py](app/models.py). Changes to the real database are made by
+migration files in [alembic/versions/](alembic/versions/), each applied once, in order. The app
+applies any new ones itself on startup (locally and on Render), so there is no separate step.
+
+To change a table (add a column, a new table, ...):
+
+1. Edit [app/models.py](app/models.py).
+2. Generate the migration. It compares the models to the database in `DATABASE_URL` (from `.env`
+   unless set in the shell):
+
+   ```powershell
+   .\venv\Scripts\alembic.exe revision --autogenerate -m "add paused to users"
+   ```
+
+3. Read the new file in `alembic/versions/` (autogenerate is good but not perfect, e.g. it sees a
+   rename as drop + add), then commit it with the model change.
+
+The tests build their database through the migrations, so a broken migration fails the tests.
+
 ## Project layout
 
 | Path | What it is |
@@ -165,7 +186,8 @@ demo database first and refuses to run against `DATABASE_URL`. Add or change peo
 | [app/db.py](app/db.py) | Database engine and session |
 | [app/models.py](app/models.py) | Database tables |
 | [app/schemas.py](app/schemas.py) | Request bodies the API accepts |
-| [app/migrations.py](app/migrations.py) | Startup: create tables, small migrations, starter rewards |
+| [app/setup_db.py](app/setup_db.py) | Startup: apply database migrations, add starter rewards |
+| [alembic/](alembic/) | Database migrations (one file per schema change in `alembic/versions/`) |
 | [app/routers/](app/routers/) | The API endpoints, grouped: `activity`, `me`, `rewards`, `points` |
 | [app/auth.py](app/auth.py) | API keys and the `X-API-Key` check |
 | [app/goals.py](app/goals.py) | Everyone's goals over time |

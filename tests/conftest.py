@@ -47,6 +47,13 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from app.auth import issue_key  # noqa: E402
 from app.db import engine  # noqa: E402
+
+# Start from an empty test database so importing the app builds it through the
+# Alembic migrations, the same way production gets its tables.
+with engine.begin() as _conn:
+    _conn.execute(text("DROP SCHEMA public CASCADE"))
+    _conn.execute(text("CREATE SCHEMA public"))
+
 from app.main import app  # noqa: E402
 
 

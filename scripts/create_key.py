@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 from app.auth import issue_key  # noqa: E402
 from app.db import engine  # noqa: E402
-from app.migrations import setup_database  # noqa: E402
+from app.setup_db import setup_database  # noqa: E402
 
 name = sys.argv[1]
 label = sys.argv[2] if len(sys.argv) > 2 else None
