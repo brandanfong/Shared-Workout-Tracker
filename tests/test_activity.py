@@ -2,14 +2,14 @@ import datetime as dt
 
 import pytest
 
-import main
+from app import config
 
 TODAY = dt.date(2026, 11, 10)
 
 
 @pytest.fixture(autouse=True)
 def fixed_today(monkeypatch):
-    monkeypatch.setattr(main, "_today", lambda: TODAY)
+    monkeypatch.setattr(config, "today", lambda: TODAY)
 
 
 @pytest.fixture

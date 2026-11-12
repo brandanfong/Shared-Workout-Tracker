@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-import colors
+from app import colors
 
 
 def test_presets_all_pass_the_rules_and_are_distinct():

@@ -4,12 +4,14 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.orm import Session
 
-import main
-import scoring
-from main import DailyActivity, User, engine, run_scoring
-from scoring import Goals
+from sqlalchemy import select, text
+
+from app import config, scoring
+from app.db import engine
+from app.models import DailyActivity, LedgerEntry, ScoringPeriod, User, UserGoal
+from app.scoring import Goals
+from app.scoring_runner import run_scoring
 from conftest import backdate_goals
-from sqlalchemy import select
 
 D = dt.date
 MON = D(2026, 11, 2)  # first full week after the Nov 1 start
@@ -92,7 +94,7 @@ def test_monthly_tiers(hit, days, pts):
 
 @pytest.fixture(autouse=True)
 def start_nov_1(monkeypatch):
-    monkeypatch.setattr(main, "SCORING_START", D(2026, 11, 1))
+    monkeypatch.setattr(config, "SCORING_START", D(2026, 11, 1))
 
 
 @pytest.fixture
@@ -187,7 +189,7 @@ def test_late_data_does_not_change_a_scored_week(client, auth, players, put):
     score(D(2026, 11, 10))
     before = balance(client, auth)["balance"]
     with engine.begin() as conn:  # a backfill upgrades every day afterwards
-        conn.execute(main.text("UPDATE daily_activity SET active_calories = 5000, exercise_minutes = 90"))
+        conn.execute(text("UPDATE daily_activity SET active_calories = 5000, exercise_minutes = 90"))
     score(D(2026, 11, 20))
     assert balance(client, auth)["balance"] == before
 
@@ -218,7 +220,7 @@ def test_blocked_week_resets_streak_but_pays_direct_points(client, auth, players
     good_week(put, MON + dt.timedelta(days=14))
     score(D(2026, 11, 24))
     with Session(engine) as db:
-        rows = {p.period: (p.pair_ok, p.streak) for p in db.scalars(select(main.ScoringPeriod))
+        rows = {p.period: (p.pair_ok, p.streak) for p in db.scalars(select(ScoringPeriod))
                 if p.kind == "week"}
     assert rows == {"wk-2026-11-02": (True, 1), "wk-2026-11-09": (False, 0),
                     "wk-2026-11-16": (True, 1)}
@@ -253,7 +255,7 @@ def test_monthly_bonus(client, auth, players, put):
 
 def test_log_triggers_scoring(client, auth, headers, players, put, monkeypatch):
     good_week(put)
-    monkeypatch.setattr(main, "_today", lambda: D(2026, 11, 10))
+    monkeypatch.setattr(config, "today", lambda: D(2026, 11, 10))
     r = client.post("/log", json={"date": "2026-11-10", "minutes": 0, "calories": 0},
                     headers=headers("brandan"))
     assert r.status_code == 200
@@ -264,7 +266,7 @@ def test_log_triggers_scoring(client, auth, headers, players, put, monkeypatch):
 
 
 def set_today(monkeypatch, day):
-    monkeypatch.setattr(main, "_today", lambda: day)
+    monkeypatch.setattr(config, "today", lambda: day)
 
 
 def test_first_save_starts_today_later_saves_apply_that_day(client, auth, monkeypatch):
@@ -294,7 +296,7 @@ def test_several_saves_in_one_day_keep_only_the_last(client, auth, monkeypatch):
         client.patch("/api/me/settings", json={"min_calories": cal}, headers=auth)
     assert client.get("/api/me", headers=auth).json()["min_calories"] == 275
     with Session(engine) as db:
-        assert len(db.scalars(select(main.UserGoal)).all()) == 1  # first save is today, so one row
+        assert len(db.scalars(select(UserGoal)).all()) == 1  # first save is today, so one row
 
 
 def test_calendar_judges_each_day_by_the_goal_then(client, auth, log, monkeypatch):
@@ -331,7 +333,7 @@ def test_weekly_target_counts_for_the_whole_week_and_locks_at_sunday(client, aut
     client.patch("/api/me/settings", json={"weekly_workouts": 4}, headers=auth)
     score(D(2026, 11, 17))
     with Session(engine) as db:
-        weeks = {p.period: p.pair_ok for p in db.scalars(select(main.ScoringPeriod))
+        weeks = {p.period: p.pair_ok for p in db.scalars(select(ScoringPeriod))
                  if p.kind == "week"}
     # week 1 needed 2 (the Thursday save counts for the whole week and the Monday
     # save does not reach back); week 2 needs 4 and brandan only did 3
@@ -340,12 +342,12 @@ def test_weekly_target_counts_for_the_whole_week_and_locks_at_sunday(client, aut
 
 def test_scoring_switch_off_pays_nothing(client, auth, players, put, monkeypatch):
     good_week(put)
-    monkeypatch.setattr(main, "SCORING_ENABLED", False)
+    monkeypatch.setattr(config, "SCORING_ENABLED", False)
     assert score(D(2026, 11, 20)) == []
     r = client.post("/api/scoring/run", headers=auth).json()
     assert r["enabled"] is False and r["scored"] == []
     assert balance(client, auth)["balance"] == 0
-    monkeypatch.setattr(main, "SCORING_ENABLED", True)  # data kept; flips on cleanly
+    monkeypatch.setattr(config, "SCORING_ENABLED", True)  # data kept; flips on cleanly
     assert score(D(2026, 11, 20)) == ["wk-2026-11-02"]
 
 
@@ -390,7 +392,7 @@ def test_late_increase_after_a_day_was_paid_is_topped_up_at_close(client, auth, 
     good_week(put)
     score(D(2026, 11, 6))  # Nov 2 already paid at 150%
     with engine.begin() as conn:  # a late sync raises partner's Nov 2 to 250% of goal
-        conn.execute(main.text(
+        conn.execute(text(
             "UPDATE daily_activity SET active_calories = 1000 "
             "WHERE date = '2026-11-02' AND user_id = (SELECT id FROM users WHERE name = 'partner')"))
     score(D(2026, 11, 10))
@@ -413,7 +415,7 @@ def test_late_update_is_labelled(client, auth, players, put):
     good_week(put)
     score(D(2026, 11, 6))
     with engine.begin() as conn:
-        conn.execute(main.text(
+        conn.execute(text(
             "UPDATE daily_activity SET active_calories = 1000 "
             "WHERE date = '2026-11-02' AND user_id = (SELECT id FROM users WHERE name = 'partner')"))
     score(D(2026, 11, 10))
@@ -432,7 +434,7 @@ def test_people_without_goals_earn_nothing_and_do_not_block_the_team(client, hea
     score(D(2026, 11, 12))
     with Session(engine) as db:
         names = {u.id: u.name for u in db.scalars(select(User))}
-        earners = {names[e.user_id] for e in db.scalars(select(main.LedgerEntry))}
+        earners = {names[e.user_id] for e in db.scalars(select(LedgerEntry))}
     assert earners == {"brandan"}
 
 
@@ -450,7 +452,7 @@ def test_goals_start_the_day_they_are_saved_earlier_days_score_nothing(client, h
     good_week(put)
     score(D(2026, 11, 10))
     with Session(engine) as db:
-        rows = db.scalars(select(main.LedgerEntry).where(main.LedgerEntry.type == "earn")).all()
+        rows = db.scalars(select(LedgerEntry).where(LedgerEntry.type == "earn")).all()
         names = {u.id: u.name for u in db.scalars(select(User))}
     mine = [r for r in rows if names[r.user_id] == "brandan"]
     # No daily points for Mon Nov 2 or Tue Nov 3, and the group still succeeded.
@@ -472,7 +474,7 @@ def test_newcomer_in_grace_week_does_not_block_the_group_or_streak(client, heade
     put("brandan", MON, [(0, 0)] * 7)     # brandan's week is empty
     score(D(2026, 11, 10))
     with Session(engine) as db:
-        wk = db.scalar(select(main.ScoringPeriod).where(main.ScoringPeriod.period == "wk-2026-11-02"))
+        wk = db.scalar(select(ScoringPeriod).where(ScoringPeriod.period == "wk-2026-11-02"))
     assert wk.pair_ok is True and wk.streak == 1
 
 
@@ -481,5 +483,5 @@ def test_team_bonus_is_the_full_amount_for_every_member(client, auth, players, p
     score(D(2026, 11, 10))
     with Session(engine) as db:
         bonuses = [r.points for r in db.scalars(
-            select(main.LedgerEntry).where(main.LedgerEntry.category == "team_bonus"))]
+            select(LedgerEntry).where(LedgerEntry.category == "team_bonus"))]
     assert bonuses == [4, 4]

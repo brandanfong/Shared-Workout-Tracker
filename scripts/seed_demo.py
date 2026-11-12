@@ -1,7 +1,7 @@
 """Fill a DEMO database with fake people and activity so the charts, calendar
 and rewards pages have something to show.
 
-    python seed_demo.py
+    python scripts/seed_demo.py
 
 Reads DEMO_DATABASE_URL from .env (a separate database, such as a Neon branch
 called "demo", so running the tests never wipes it). If that is not set it falls
@@ -15,25 +15,13 @@ the server against the demo data.
 import datetime as dt
 import os
 import random
-import re
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))  # so `import app` works when run as a script
 
-def read_env() -> dict[str, str]:
-    env = {}
-    path = Path(__file__).parent / ".env"
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"\s*(\w+)\s*=\s*(.*)$", line)
-            if m:
-                env[m.group(1)] = m.group(2).strip().strip("'\"")
-    return env
-
-
-def norm(url: str | None) -> str:
-    return (url or "").strip().strip("'\"").replace("+psycopg", "", 1)
-
+from app.envfile import read_env, same_db  # noqa: E402
 
 env = read_env()
 DEMO_VAR = "DEMO_DATABASE_URL"
@@ -41,13 +29,13 @@ demo_url = os.environ.get(DEMO_VAR) or env.get(DEMO_VAR)
 if not demo_url:
     DEMO_VAR = "TEST_DATABASE_URL"  # fallback: shared with the test suite, which wipes it
     demo_url = os.environ.get(DEMO_VAR) or env.get(DEMO_VAR)
-real_url = os.environ.get("DATABASE_URL") or env.get("DATABASE_URL")
 if not demo_url:
     sys.exit("DEMO_DATABASE_URL is not set (put it in .env).")
-if norm(demo_url) == norm(real_url):
+# Check against the real URL in .env AND anything set in this shell.
+if same_db(demo_url, env.get("DATABASE_URL")) or same_db(demo_url, os.environ.get("DATABASE_URL")):
     sys.exit(f"{DEMO_VAR} is the same database as DATABASE_URL. Refusing to wipe it.")
 test_url = os.environ.get("TEST_DATABASE_URL") or env.get("TEST_DATABASE_URL")
-if DEMO_VAR == "DEMO_DATABASE_URL" and test_url and norm(demo_url) == norm(test_url):
+if DEMO_VAR == "DEMO_DATABASE_URL" and same_db(demo_url, test_url):
     print("Note: DEMO_DATABASE_URL is the same database as TEST_DATABASE_URL, so running "
           "the tests will wipe the demo data. Use a separate branch to avoid that.\n")
 
@@ -56,7 +44,7 @@ today = dt.date.today()
 this_monday = today - dt.timedelta(days=today.weekday())
 start = this_monday - dt.timedelta(weeks=WEEKS)
 
-# Must be set BEFORE main is imported (it reads these at import time).
+# Must be set BEFORE the app is imported (it reads these at import time).
 os.environ["DATABASE_URL"] = demo_url
 os.environ["SCORING_ENABLED"] = "true"
 os.environ["SCORING_START_DATE"] = start.isoformat()
@@ -64,7 +52,12 @@ os.environ["SCORING_START_DATE"] = start.isoformat()
 from sqlalchemy import select, text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-import main  # noqa: E402
+from app.auth import hash_key  # noqa: E402
+from app.db import engine  # noqa: E402
+from app.ledger import current_balance  # noqa: E402
+from app.migrations import seed_rewards, setup_database  # noqa: E402
+from app.models import EPOCH, ApiKey, DailyActivity, LedgerEntry, Reward, User, UserGoal  # noqa: E402
+from app.scoring_runner import run_scoring  # noqa: E402
 
 PEOPLE = {
     # name: (calorie goal, minutes goal, workouts a week, typical workout cal, rest-day cal)
@@ -94,21 +87,21 @@ def spread_dates(db) -> None:
             d = dt.date(y + (m == 12), m % 12 + 1, 3)
         return min(dt.datetime.combine(d, dt.time(12, 0), tzinfo=utc), now)
 
-    for e in db.scalars(select(main.LedgerEntry)).all():
+    for e in db.scalars(select(LedgerEntry)).all():
         if e.period:
             e.created_at = landed(e.period)
     db.flush()
 
-    rewards = db.scalars(select(main.Reward).order_by(main.Reward.cost)).all()
-    users = {u.name: u.id for u in db.scalars(select(main.User)).all()}
+    rewards = db.scalars(select(Reward).order_by(Reward.cost)).all()
+    users = {u.name: u.id for u in db.scalars(select(User)).all()}
     for days_ago, who in ((35, "demo_a"), (21, "demo_c"), (9, "demo_b")):
         when = dt.datetime.combine(today - dt.timedelta(days=days_ago), dt.time(18, 0), tzinfo=utc)
-        bal = sum(db.scalars(select(main.LedgerEntry.points).where(main.LedgerEntry.created_at <= when)).all())
+        bal = sum(db.scalars(select(LedgerEntry.points).where(LedgerEntry.created_at <= when)).all())
         affordable = [r for r in rewards if r.cost <= bal * 0.6]
         if not affordable:
             continue
         r = affordable[-1]
-        db.add(main.LedgerEntry(
+        db.add(LedgerEntry(
             type="redeem", user_id=users[who], category="redeem", points=-r.cost,
             balance_after=0, reward_id=r.id, note=r.name, created_at=when,
         ))
@@ -116,7 +109,7 @@ def spread_dates(db) -> None:
 
     running = 0
     for e in db.scalars(
-        select(main.LedgerEntry).order_by(main.LedgerEntry.created_at, main.LedgerEntry.id)
+        select(LedgerEntry).order_by(LedgerEntry.created_at, LedgerEntry.id)
     ).all():
         running += e.points
         e.balance_after = running
@@ -124,30 +117,31 @@ def spread_dates(db) -> None:
 
 
 rng = random.Random(7)
-print(f"Wiping and seeding host {main.engine.url.host} ...")
-with main.engine.begin() as conn:
+setup_database()  # create tables if this is a fresh database
+print(f"Wiping and seeding host {engine.url.host} ...")
+with engine.begin() as conn:
     conn.execute(
         text(
             "TRUNCATE scoring_periods, ledger, rewards, daily_activity, api_keys, "
             "user_goals, users RESTART IDENTITY CASCADE"
         )
     )
-main.seed_rewards()
+seed_rewards()
 
 keys = {}
-with Session(main.engine) as db:
+with Session(engine) as db:
     for name, (cal_goal, min_goal, per_week, workout_cal, rest_cal) in PEOPLE.items():
         # Fixed, easy-to-remember keys (demo_a -> "demo-a"), so nothing needs looking up
         # after a re-seed. They only work against this throwaway demo database.
-        user = main.User(name=name)
+        user = User(name=name)
         db.add(user)
         db.flush()
         keys[name] = name.replace("_", "-")
-        db.add(main.ApiKey(user_id=user.id, key_hash=main.hash_key(keys[name]), label="demo (fixed key)"))
+        db.add(ApiKey(user_id=user.id, key_hash=hash_key(keys[name]), label="demo (fixed key)"))
         db.add(
-            main.UserGoal(
+            UserGoal(
                 user_id=user.id,
-                effective_from=main.EPOCH,
+                effective_from=EPOCH,
                 min_minutes=min_goal,
                 min_calories=cal_goal,
                 weekly_workouts=per_week,
@@ -167,25 +161,22 @@ with Session(main.engine) as db:
                 minutes = rng.choice([0, 0, 5, 12, 20])
                 calories = int(rest_cal * rng.uniform(0.75, 1.3))
             db.add(
-                main.DailyActivity(
+                DailyActivity(
                     user_id=user.id, date=day, exercise_minutes=minutes, active_calories=calories
                 )
             )
             day += dt.timedelta(days=1)
     db.commit()
 
-    scored = main.run_scoring(db, today)
+    scored = run_scoring(db, today)
     spread_dates(db)
-    balance = main.current_balance(db)
+    balance = current_balance(db)
 
 print(f"Scored {len(scored)} periods; shared balance is {balance} points.\n")
 print("Demo API keys (fixed; they only work against the demo database):")
 for name, key in keys.items():
     print(f"  {name}: {key}")
 print(
-    "\nStart the server against the demo data in a PowerShell window:\n"
-    f"  Get-Content .env | % {{ if ($_ -match '^\\s*{DEMO_VAR}\\s*=\\s*(.*)$') "
-    "{ $env:DATABASE_URL = $Matches[1].Trim() } }\n"
-    f"  $env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '{start.isoformat()}'\n"
-    "  .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload"
+    "\nStart the server against the demo data:\n"
+    "  .\\venv\\Scripts\\python.exe -m app --demo"
 )

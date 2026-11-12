@@ -1,7 +1,9 @@
 import pytest
 from sqlalchemy.orm import Session
 
-from main import engine, record_earn, User
+from app.db import engine
+from app.ledger import record_earn
+from app.models import User
 from sqlalchemy import select, text
 
 

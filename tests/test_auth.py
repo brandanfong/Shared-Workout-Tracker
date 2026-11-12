@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from main import engine
+from app.db import engine
 
 
 def test_missing_key_is_401(client):

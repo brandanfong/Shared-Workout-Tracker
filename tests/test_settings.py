@@ -97,8 +97,8 @@ def test_calendar_lists_goals_for_people_with_no_activity(client, headers):
     assert data["days"] == {}
 
 def test_me_reports_when_scoring_is_paused(client, auth, monkeypatch):
-    import main
-    monkeypatch.setattr(main, "SCORING_ENABLED", False)
+    from app import config
+    monkeypatch.setattr(config, "SCORING_ENABLED", False)
     assert client.get("/api/me", headers=auth).json()["scoring_enabled"] is False
 
 
@@ -158,7 +158,7 @@ def test_color_endpoints_require_a_key(client):
 
 
 def test_calendar_sends_the_everyone_color(client, headers):
-    import colors
+    from app import colors
     data = client.get("/api/calendar?month=2026-11", headers=headers("brandan")).json()
     assert data["everyone_color"] == colors.EVERYONE_COLOR
 

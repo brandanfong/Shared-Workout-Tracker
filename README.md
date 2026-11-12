@@ -47,7 +47,7 @@ needs 5+ calorie-goal days and your own weekly workout target; the pair succeeds
 everyone does. A blocked week resets the streak but everyone keeps their direct points.
 
 Scored weeks are frozen: data that arrives later does not change points already paid.
-The full numbers live in [scoring.py](scoring.py).
+The full numbers live in [app/scoring.py](app/scoring.py).
 
 **Scoring is off by default.** Nothing is paid until you set `SCORING_ENABLED=true`. While
 it is off the site shows a "Scoring is paused" banner and your activity is still stored.
@@ -86,15 +86,18 @@ branch). The tests wipe it. (The demo data lives in its own database, see below.
 Run the app:
 
 ```powershell
-.\venv\Scripts\python.exe -m uvicorn main:app --reload --env-file .env
+.\venv\Scripts\python.exe -m app            # real data
+.\venv\Scripts\python.exe -m app --demo     # demo data (see Demo data below)
 ```
 
-Then open http://127.0.0.1:8000. Tables are created automatically on startup.
+Then open http://127.0.0.1:8000. Settings come from `.env`, so nothing needs setting in
+PowerShell first. Tables are created automatically on startup. Options: `--port 8001`,
+`--no-reload`.
 
 ### Give each person an API key
 
 ```powershell
-.\venv\Scripts\python.exe create_key.py brandan "iPhone shortcut"
+.\venv\Scripts\python.exe scripts\create_key.py brandan "iPhone shortcut"
 ```
 
 The key is printed **once** (only its hash is stored). Paste it into the website's key
@@ -115,9 +118,10 @@ All optional.
 ## Tests
 
 ```powershell
-Get-Content .env | % { if ($_ -match '^\s*TEST_DATABASE_URL\s*=\s*(.*)$') { $env:TEST_DATABASE_URL = $Matches[1].Trim() } }
 .\venv\Scripts\python.exe -m pytest -q
 ```
+
+`tests/conftest.py` reads `TEST_DATABASE_URL` from `.env` itself.
 
 The tests **truncate every table** in `TEST_DATABASE_URL` and refuse to run if it is the
 same database as `DATABASE_URL`. GitHub Actions runs them on every push
@@ -125,7 +129,7 @@ same database as `DATABASE_URL`. GitHub Actions runs them on every push
 
 ## Demo data
 
-[seed_demo.py](seed_demo.py) fills a **demo** database with six fake people and about
+[scripts/seed_demo.py](scripts/seed_demo.py) fills a **demo** database with six fake people and about
 eight weeks of activity, and scores it, so you can see the calendar, charts, and rewards
 without touching real data. Use it for UI work or to try things like many users.
 
@@ -136,20 +140,16 @@ branch named `demo`, set to never auto-delete, created as schema only), and add 
 DEMO_DATABASE_URL=postgresql://user:password@demo-host/dbname
 ```
 
-Seed it, then start the server pointed at it (these commands only affect that PowerShell
-window):
+Seed it once, then start the server in demo mode:
 
 ```powershell
-.\venv\Scripts\python.exe seed_demo.py
-
-Get-Content .env | % { if ($_ -match '^\s*DEMO_DATABASE_URL\s*=\s*(.*)$') { $env:DATABASE_URL = $Matches[1].Trim() } }
-$env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '2026-09-14'
-.\venv\Scripts\python.exe -m uvicorn main:app --reload
+.\venv\Scripts\python.exe scripts\seed_demo.py
+.\venv\Scripts\python.exe -m app --demo
 ```
 
 The demo API keys are fixed (`demo-a`, `demo-b`, ... one per person) so you never have to look
-them up after a re-seed; they only work against the demo database. The seed script prints the exact start commands (including the
-`SCORING_START_DATE` to use, which depends on today's date) each time it runs. It wipes the
+them up after a re-seed; they only work against the demo database. Demo mode turns scoring on and reads the scoring start date
+from the demo database, so it always matches the last seed. The seed script wipes the
 demo database first and refuses to run against `DATABASE_URL`. Add or change people in the
 `PEOPLE` list at the top of the script. If `DEMO_DATABASE_URL` is not set it falls back to
 `TEST_DATABASE_URL`, which the tests wipe, so you would have to re-seed after every test run.
@@ -158,12 +158,26 @@ demo database first and refuses to run against `DATABASE_URL`. Add or change peo
 
 | Path | What it is |
 |---|---|
-| [main.py](main.py) | The FastAPI app: database tables, API, scoring runner |
-| [scoring.py](scoring.py) | The scoring rules (pure functions, no database) |
-| [colors.py](colors.py) | Preset colors and the rules a chosen color must follow |
+| [app/\_\_main\_\_.py](app/__main__.py) | `python -m app [--demo]`: reads `.env` and starts the server |
+| [app/main.py](app/main.py) | Creates the FastAPI app and plugs in the routers |
+| [app/envfile.py](app/envfile.py) | Reads `.env` (used by the launcher and scripts) |
+| [app/config.py](app/config.py) | Settings read from environment variables |
+| [app/db.py](app/db.py) | Database engine and session |
+| [app/models.py](app/models.py) | Database tables |
+| [app/schemas.py](app/schemas.py) | Request bodies the API accepts |
+| [app/migrations.py](app/migrations.py) | Startup: create tables, small migrations, starter rewards |
+| [app/routers/](app/routers/) | The API endpoints, grouped: `activity`, `me`, `rewards`, `points` |
+| [app/auth.py](app/auth.py) | API keys and the `X-API-Key` check |
+| [app/goals.py](app/goals.py) | Everyone's goals over time |
+| [app/ledger.py](app/ledger.py) | The points ledger (shared balance) |
+| [app/scoring_runner.py](app/scoring_runner.py) | Turns finished weeks/months into ledger entries |
+| [app/scoring.py](app/scoring.py) | The scoring rules (pure functions, no database) |
+| [app/colors.py](app/colors.py) | Preset colors and the rules a chosen color must follow |
+| [app/users.py](app/users.py) | Working out each person's display color |
+| [app/labels.py](app/labels.py) | The plain-English text for points history rows |
 | [static/index.html](static/index.html) | The whole front end (one page, no build step) |
-| [create_key.py](create_key.py) | Make an API key for a person |
-| [seed_demo.py](seed_demo.py) | Fill the test database with demo data |
+| [scripts/create_key.py](scripts/create_key.py) | Make an API key for a person |
+| [scripts/seed_demo.py](scripts/seed_demo.py) | Fill the demo database with fake data |
 | [tests/](tests/) | The test suite |
 
 ## API overview

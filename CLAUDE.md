@@ -1,69 +1,34 @@
 # Shared Workout Tracker
 
 FastAPI + Postgres (Neon) app. Front end is one file: `static/index.html` (no build step).
-`main.py` reads `os.environ["DATABASE_URL"]` directly and does NOT load `.env` itself, so the
-environment must be set before starting the server (see below). Starting without it gives
-`KeyError: 'DATABASE_URL'`.
+Start the server with `python -m app` ([app/__main__.py](app/__main__.py)). It reads `.env` itself
+(`.env` wins over anything left set in the shell) and picks the database from a flag.
 
 All commands are PowerShell, run from the project folder.
 
-## Quick start (copy/paste)
-
-**Live data** (use a fresh PowerShell window):
+## Run the app
 
 ```powershell
-.\venv\Scripts\python.exe -m uvicorn main:app --reload --env-file .env
+.\venv\Scripts\python.exe -m app            # REAL data (DATABASE_URL from .env)
+.\venv\Scripts\python.exe -m app --demo     # DEMO data (DEMO_DATABASE_URL from .env)
 ```
 
-**Demo data** (paste all three lines at once; no `--env-file`):
+Open http://127.0.0.1:8000. Also takes `--port 8001` and `--no-reload`. Nothing is left set in
+the PowerShell window, so switching between real and demo is just a different command.
+
+- Real mode: scoring follows `SCORING_ENABLED` in `.env` (off by default).
+- Demo mode: scoring is on, and `SCORING_START_DATE` is read from the demo DB (its first scored
+  week), so it always matches the last seed run. Demo API keys are fixed: `demo-a`, `demo-b`, ...
+- Under the hood it's uvicorn; `app/config.py` reads `DATABASE_URL` from the environment. Running
+  `uvicorn app.main:app --env-file .env` directly still works for real data.
+
+**Optional: re-seed the demo** only to refresh the fake data (it is generated relative to today,
+so it drifts), change the `PEOPLE` list, or after the demo branch is reset. This WIPES the demo DB;
+`python -m app --demo` picks up the new start date automatically:
 
 ```powershell
-Get-Content .env | % { if ($_ -match '^\s*DEMO_DATABASE_URL\s*=\s*(.*)$') { $env:DATABASE_URL = $Matches[1].Trim() } }; $env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '2026-09-14'
-.\venv\Scripts\python.exe -m uvicorn main:app --reload
+.\venv\Scripts\python.exe scripts\seed_demo.py
 ```
-
-Details and gotchas are below.
-
-## Run against the REAL database
-
-`.env` holds `DATABASE_URL`; pass it with `--env-file`:
-
-```powershell
-.\venv\Scripts\python.exe -m uvicorn main:app --reload --env-file .env
-```
-
-Open http://127.0.0.1:8000. Scoring is off by default (`SCORING_ENABLED` unset/false).
-
-## Run in DEMO mode (fake data, separate Neon branch)
-
-`.env` must contain `DEMO_DATABASE_URL`. Env vars only affect the current PowerShell window.
-
-The demo data already lives in the Neon demo branch, so the normal way to start is just this
-(no seeding needed):
-
-```powershell
-# Point this window at the demo DB and start the server
-Get-Content .env | % { if ($_ -match '^\s*DEMO_DATABASE_URL\s*=\s*(.*)$') { $env:DATABASE_URL = $Matches[1].Trim() } }
-$env:SCORING_ENABLED = 'true'; $env:SCORING_START_DATE = '2026-09-14'
-.\venv\Scripts\python.exe -m uvicorn main:app --reload
-```
-
-`SCORING_START_DATE` must be the date from the last seed run (`2026-09-14` was the one in the
-README; use whatever `seed_demo.py` printed if it differs).
-
-**Optional: re-seed** only to refresh the fake data (it is generated relative to today, so it
-drifts), change the `PEOPLE` list, or after the demo branch is reset. This WIPES the demo DB and
-prints a new `SCORING_START_DATE` to use:
-
-```powershell
-.\venv\Scripts\python.exe seed_demo.py
-```
-
-Do NOT add `--env-file .env` in demo mode: it would load the real `DATABASE_URL` over the demo one.
-Demo API keys are fixed: `demo-a`, `demo-b`, ... (only work on the demo DB).
-
-Gotcha: `$env:DATABASE_URL` stays set in that window. To go back to real data, open a new
-PowerShell window (or `Remove-Item Env:DATABASE_URL, Env:SCORING_ENABLED, Env:SCORING_START_DATE`).
 
 ## Tests
 
@@ -105,7 +70,7 @@ Targeted runs are still handy while building a feature:
 ```
 
 Run the full suite before the user confirms a feature as done or before pushing, since shared code
-(`main.py`, DB setup) can break unrelated tests.
+(`app/db.py`, `app/migrations.py`, `tests/conftest.py`) can break unrelated tests.
 
 ## TODO.md
 
@@ -114,5 +79,8 @@ before that confirmation, even if the code and tests look done.
 
 ## Other
 
-- New API key: `.\venv\Scripts\python.exe create_key.py <name> "<label>"` (uses `DATABASE_URL` from env or `.env`).
+- New API key: `.\venv\Scripts\python.exe scripts\create_key.py <name> "<label>"` (uses `DATABASE_URL` from env or `.env`).
+- Code lives in the `app/` package (endpoints in `app/routers/`); one-off CLI scripts live in `scripts/`.
+- Settings and "today" live in `app/config.py`. Read them as `config.SCORING_ENABLED` / `config.today()`,
+  not `from app.config import ...`, so tests can monkeypatch them in one place.
 - More detail (settings table, API, layout): see README.md.

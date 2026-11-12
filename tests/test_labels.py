@@ -2,7 +2,7 @@ import datetime as dt
 
 import pytest
 
-import labels
+from app import labels
 
 TODAY = dt.date(2026, 11, 10)
 

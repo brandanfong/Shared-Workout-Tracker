@@ -8,7 +8,7 @@ def _norm(url):
 
 
 def _from_dotenv(key):
-    """Read one KEY=value line from the project's .env (main.py doesn't load it)."""
+    """Read one KEY=value line from the project's .env (the app doesn't load it)."""
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     try:
         with open(path, encoding="utf-8-sig") as f:
@@ -32,7 +32,7 @@ if not TEST_URL:
 if _norm(TEST_URL) == _norm(os.environ.get("DATABASE_URL")):
     pytest.exit("TEST_DATABASE_URL must differ from DATABASE_URL.", returncode=2)
 
-# Must be set BEFORE main is imported (it reads these at import time).
+# Must be set BEFORE the app is imported (it reads these at import time).
 os.environ["DATABASE_URL"] = TEST_URL
 os.environ["MIN_WORKOUT_MINUTES"] = "30"
 os.environ["MIN_WORKOUT_CALORIES"] = "400"
@@ -45,7 +45,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from main import app, engine, issue_key  # noqa: E402
+from app.auth import issue_key  # noqa: E402
+from app.db import engine  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -106,20 +108,20 @@ def set_goals(client, headers):
 def backdate_goals():
     """A first goal save starts today, which would leave the tests' past dates
     unjudged. Move every person's earliest goal row back to the epoch."""
-    import main
     from sqlalchemy import func, select, update
-    from sqlalchemy.orm import Session
 
-    with Session(main.engine) as db:
-        for uid in db.scalars(select(main.UserGoal.user_id).distinct()).all():
+    from app.models import EPOCH, UserGoal
+
+    with Session(engine) as db:
+        for uid in db.scalars(select(UserGoal.user_id).distinct()).all():
             first = db.scalar(
-                select(func.min(main.UserGoal.effective_from)).where(main.UserGoal.user_id == uid)
+                select(func.min(UserGoal.effective_from)).where(UserGoal.user_id == uid)
             )
-            if first != main.EPOCH:
+            if first != EPOCH:
                 db.execute(
-                    update(main.UserGoal)
-                    .where(main.UserGoal.user_id == uid, main.UserGoal.effective_from == first)
-                    .values(effective_from=main.EPOCH)
+                    update(UserGoal)
+                    .where(UserGoal.user_id == uid, UserGoal.effective_from == first)
+                    .values(effective_from=EPOCH)
                 )
         db.commit()
 
