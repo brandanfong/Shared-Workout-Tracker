@@ -50,7 +50,7 @@ def adjust(
 
 def _earned_month():
     """The YYYY-MM an entry belongs to: the month it was earned FOR (read from its
-    period, so a day paid two days late still counts in its own month), or for
+    period, so a day paid a day late still counts in its own month), or for
     redemptions and adjustments the month they happened."""
     p = LedgerEntry.period
     return case(

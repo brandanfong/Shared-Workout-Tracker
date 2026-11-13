@@ -17,9 +17,8 @@ TEAM_BONUS = 4
 MULTIPLIERS = [(8, Decimal("1.5")), (4, Decimal("1.25")), (2, Decimal("1.1"))]  # streak >= n
 MONTHLY_TIERS = [(100, 20), (90, 10), (80, 5)]  # pct of days in month hit -> points
 
-# A week is scored the Tuesday after it ends (one day of grace for the Monday sync).
-GRACE_DAYS = 1
-# ...but only once every player has synced that Sunday, or after this many days.
+# A week (or month) is scored once every player has a row dated after its last day
+# (the phone has synced since, so the day is final), or after this many days.
 READY_TIMEOUT_DAYS = 7
 
 
@@ -114,11 +113,6 @@ def monthly_points(days_hit: int, days_in_month: int) -> int:
         if days_hit * 100 >= days_in_month * pct:
             return pts
     return 0
-
-
-def week_ready_date(monday: dt.date) -> dt.date:
-    """First day the week may be scored (the Tuesday after it ends)."""
-    return monday + dt.timedelta(days=6 + 1 + GRACE_DAYS)
 
 
 def month_bounds(month: str) -> tuple[dt.date, dt.date]:

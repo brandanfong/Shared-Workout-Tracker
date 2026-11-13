@@ -111,20 +111,38 @@ def players(client, headers):
 def put():
     """Insert daily rows directly: put('brandan', MON, [(min, cal), ...])."""
 
-    def _put(name, monday, per_day):
+    def _put(name, monday, per_day, only_if_missing=False):
         with Session(engine) as db:
             uid = db.scalar(select(User.id).where(User.name == name))
             for i, (mins, cal) in enumerate(per_day):
-                db.add(DailyActivity(user_id=uid, date=monday + dt.timedelta(days=i),
+                day = monday + dt.timedelta(days=i)
+                existing = db.scalar(select(DailyActivity).where(
+                    DailyActivity.user_id == uid, DailyActivity.date == day))
+                if existing is not None:
+                    if only_if_missing:
+                        continue
+                    db.delete(existing)
+                    db.flush()
+                db.add(DailyActivity(user_id=uid, date=day,
                                      exercise_minutes=mins, active_calories=cal))
             db.commit()
 
     return _put
 
 
-def good_week(put, monday=MON, brandan_workouts=4):
+def mark_synced(put, monday=MON):
+    """A week is final once each player has a row dated after it, which in real
+    life is the next Monday's sync. Adds an empty Monday row (kept if real data
+    is already there)."""
+    for name in ("brandan", "partner"):
+        put(name, monday + dt.timedelta(days=7), [(0, 0)], only_if_missing=True)
+
+
+def good_week(put, monday=MON, brandan_workouts=4, synced=True):
     put("brandan", monday, [B_WORKOUT] * brandan_workouts + [B_HIT] * (7 - brandan_workouts))
     put("partner", monday, [(45, 600)] * 2 + [(0, 400)] * 5)
+    if synced:
+        mark_synced(put, monday)
 
 
 def score(today):
@@ -136,10 +154,15 @@ def balance(client, auth):
     return client.get("/api/balance", headers=auth).json()
 
 
-def test_week_scores_on_tuesday_not_before(client, auth, players, put):
-    good_week(put)
-    assert score(D(2026, 11, 9)) == []  # Monday after: still in the grace day
-    assert score(D(2026, 11, 10)) == ["wk-2026-11-02"]
+def test_week_waits_until_everyone_has_synced_after_sunday(client, auth, players, put):
+    # Both players have a full week including Sunday, but a Sunday row alone is not
+    # final: the phone might have sent only part of the day (the old bug).
+    good_week(put, synced=False)
+    assert score(D(2026, 11, 9)) == []
+    put("brandan", D(2026, 11, 9), [(0, 0)])  # only one player has synced Monday
+    assert score(D(2026, 11, 9)) == []
+    put("partner", D(2026, 11, 9), [(0, 0)])
+    assert score(D(2026, 11, 9)) == ["wk-2026-11-02"]
     b = balance(client, auth)
     # 28 + 22 + 8 team bonus (4 each)
     assert b["balance"] == 58 and b["earned_by"] == {"brandan": 32, "partner": 26}
@@ -186,18 +209,22 @@ def test_scoring_is_idempotent(client, auth, players, put):
 def test_late_data_does_not_change_a_scored_week(client, auth, players, put):
     put("brandan", MON, [B_HIT] * 7)
     put("partner", MON, [(0, 400)] * 7)
+    mark_synced(put)
     score(D(2026, 11, 10))
     before = balance(client, auth)["balance"]
-    with engine.begin() as conn:  # a backfill upgrades every day afterwards
-        conn.execute(text("UPDATE daily_activity SET active_calories = 5000, exercise_minutes = 90"))
+    with engine.begin() as conn:  # a backfill upgrades every day of that week afterwards
+        conn.execute(text(
+            "UPDATE daily_activity SET active_calories = 5000, exercise_minutes = 90 "
+            "WHERE date < '2026-11-09'"))
     score(D(2026, 11, 20))
     assert balance(client, auth)["balance"] == before
 
 
 def test_waits_for_partner_sync_then_times_out(client, auth, players, put):
     put("brandan", MON, [B_WORKOUT] * 4 + [B_HIT] * 3)
-    put("partner", MON, [(45, 600)] * 2 + [(0, 400)] * 4)  # no Sunday row
-    assert score(D(2026, 11, 10)) == []  # partner has not synced Sunday yet
+    put("brandan", D(2026, 11, 9), [(0, 0)])  # brandan has synced since the week ended
+    put("partner", MON, [(45, 600)] * 2 + [(0, 400)] * 4)  # partner stopped syncing on Saturday
+    assert score(D(2026, 11, 10)) == []  # no row after Sunday from partner yet
     assert score(D(2026, 11, 14)) == []
     assert score(D(2026, 11, 15)) == ["wk-2026-11-02"]  # 7 days later: score anyway
     assert balance(client, auth)["earned_by"]["brandan"] > 0
@@ -245,6 +272,7 @@ def test_days_before_start_are_ignored(client, auth, players, put):
 def test_monthly_bonus(client, auth, players, put):
     for name in ("brandan", "partner"):
         put(name, D(2026, 11, 1), [(0, 1000)] * 30)  # every day of November
+        put(name, D(2026, 12, 1), [(0, 0)])           # synced since the month ended
     scored = score(D(2026, 12, 2))
     assert "2026-11" in scored
     monthly = [e for e in client.get("/api/ledger?limit=1000", headers=auth).json()
@@ -358,14 +386,35 @@ def ledger_rows(client, auth):
     return client.get("/api/ledger?limit=1000", headers=auth).json()
 
 
-def test_days_pay_two_days_after_they_end(client, auth, players, put):
+def test_days_pay_once_a_later_row_exists(client, auth, players, put):
     good_week(put)
-    score(D(2026, 11, 6))  # Friday: Mon, Tue, Wed have settled
+    score(D(2026, 11, 6))  # Friday: Mon-Thu are over and have a later row
     b = balance(client, auth)
-    # brandan: 3 workout days at 150% = 3 x (2 + 2) = 12
-    # partner: Nov 2, 3 at 150% + workout = 4 each, Nov 4 at 100% = 1  -> 9
-    assert b["earned_by"] == {"brandan": 12, "partner": 9}
+    # brandan: 4 workout days at 150% = 4 x (2 + 2) = 16
+    # partner: Nov 2, 3 at 150% + workout = 4 each, Nov 4, 5 at 100% = 1 each -> 10
+    assert b["earned_by"] == {"brandan": 16, "partner": 10}
     assert all(e["period"].startswith("day-") for e in ledger_rows(client, auth))
+
+
+def test_each_persons_days_pay_when_that_person_has_synced(client, auth, players, put):
+    put("brandan", MON, [B_WORKOUT] * 4)             # brandan synced Mon-Thu
+    put("partner", MON, [(45, 600)] * 2)             # partner's last row is Tuesday
+    score(D(2026, 11, 6))
+    b = balance(client, auth)
+    # Nov 2-4 are final for brandan (a later row exists), Nov 5 is not.
+    # Nov 2 is final for partner, Nov 3 (their latest row) is not.
+    assert b["earned_by"] == {"brandan": 12, "partner": 4}
+    assert score(D(2026, 11, 8)) == []  # nobody has synced since: nothing new is paid
+    assert balance(client, auth)["earned_by"] == {"brandan": 12, "partner": 4}
+
+
+def test_unsynced_days_pay_as_zero_after_the_timeout(client, auth, players, put):
+    put("brandan", MON, [B_WORKOUT])  # one day, then the phone goes quiet
+    put("partner", MON, [(45, 600)])
+    score(D(2026, 11, 8))
+    assert balance(client, auth)["balance"] == 0   # Nov 2 has no later row yet
+    score(D(2026, 11, 9))                          # 7 days after Nov 2: final regardless
+    assert balance(client, auth)["earned_by"] == {"brandan": 4, "partner": 4}
 
 
 def test_daily_payment_is_idempotent(client, auth, players, put):
@@ -472,6 +521,7 @@ def test_newcomer_in_grace_week_does_not_block_the_group_or_streak(client, heade
                  json={"min_calories": 500, "weekly_workouts": 4})
     put("partner", MON, [(45, 450)] * 7)  # partner has a perfect week
     put("brandan", MON, [(0, 0)] * 7)     # brandan's week is empty
+    mark_synced(put)
     score(D(2026, 11, 10))
     with Session(engine) as db:
         wk = db.scalar(select(ScoringPeriod).where(ScoringPeriod.period == "wk-2026-11-02"))
@@ -485,3 +535,62 @@ def test_team_bonus_is_the_full_amount_for_every_member(client, auth, players, p
         bonuses = [r.points for r in db.scalars(
             select(LedgerEntry).where(LedgerEntry.category == "team_bonus"))]
     assert bonuses == [4, 4]
+
+
+# ---------- personal bonuses pay per person; only the group part waits ----------
+
+
+def earned(client, auth, name, category, period=None):
+    return sum(
+        e["points"] for e in ledger_rows(client, auth)
+        if e["player"] == name and e["category"] == category
+        and (period is None or e["period"] == period)
+    )
+
+
+def test_personal_weekly_bonuses_do_not_wait_for_the_other_player(client, auth, players, put):
+    good_week(put, synced=False)
+    put("brandan", D(2026, 11, 9), [(0, 0)])  # brandan has synced since the week ended; partner has not
+    assert score(D(2026, 11, 10)) == []        # the group part still waits
+    assert earned(client, auth, "brandan", "calorie_weekly") == 5
+    assert earned(client, auth, "brandan", "workout_goal") == 4
+    assert earned(client, auth, "partner", "workout_goal") == 0
+    assert earned(client, auth, "brandan", "team_bonus") == 0
+    # partner's days Nov 2-7 are final too (she synced Sunday), so they are paid daily;
+    # only her weekly bonuses and the team bonus wait.
+    assert balance(client, auth)["earned_by"] == {"brandan": 28, "partner": 12}
+
+    put("partner", D(2026, 11, 9), [(0, 0)])
+    assert score(D(2026, 11, 10)) == ["wk-2026-11-02"]
+    b = balance(client, auth)
+    assert b["balance"] == 58 and b["earned_by"] == {"brandan": 32, "partner": 26}
+    keys = [(e["player"], e["period"], e["category"]) for e in ledger_rows(client, auth)]
+    assert len(keys) == len(set(keys))  # nothing paid twice
+
+
+def test_a_players_week_is_frozen_once_paid(client, auth, players, put):
+    good_week(put, synced=False)
+    put("brandan", D(2026, 11, 9), [(0, 0)])
+    score(D(2026, 11, 10))
+    before = earned(client, auth, "brandan", "calorie_daily") + earned(client, auth, "brandan", "workout_day")
+    with engine.begin() as conn:  # a late backfill upgrades brandan's finished week
+        conn.execute(text(
+            "UPDATE daily_activity SET active_calories = 5000, exercise_minutes = 90 "
+            "WHERE date < '2026-11-09' AND user_id = (SELECT id FROM users WHERE name = 'brandan')"))
+    score(D(2026, 11, 11))
+    after = earned(client, auth, "brandan", "calorie_daily") + earned(client, auth, "brandan", "workout_day")
+    assert after == before
+
+
+def test_monthly_bonus_pays_each_person_when_they_have_synced(client, auth, players, put):
+    for name in ("brandan", "partner"):
+        put(name, D(2026, 11, 1), [(0, 1000)] * 30)
+    put("brandan", D(2026, 12, 1), [(0, 0)])   # only brandan has synced after the month
+    scored = score(D(2026, 12, 2))
+    assert "2026-11" not in scored              # the month is complete only when everyone is paid
+    assert earned(client, auth, "brandan", "calorie_monthly") == 20
+    assert earned(client, auth, "partner", "calorie_monthly") == 0
+    put("partner", D(2026, 12, 1), [(0, 0)])
+    assert "2026-11" in score(D(2026, 12, 2))
+    assert earned(client, auth, "partner", "calorie_monthly") == 20
+    assert earned(client, auth, "brandan", "calorie_monthly") == 20  # not paid twice
