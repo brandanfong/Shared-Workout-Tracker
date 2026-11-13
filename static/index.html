@@ -124,6 +124,10 @@
   table.ledger { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   table.ledger th, table.ledger td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); white-space: nowrap; }
   table.ledger th { color: var(--muted); font-weight: 600; border-top: none; }
+  /* History scrolls inside its own box (headers stay put); older rows load near the bottom. */
+  .ledger-scroll { max-height: min(460px, 60vh); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .ledger-scroll table.ledger th { position: sticky; top: 0; z-index: 1; background: var(--card); box-shadow: 0 1px 0 var(--border); }
+  .ledger-end { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 8px; }
   table.ledger td.num, table.ledger th.num { text-align: right; }
   .banner { background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 0.9rem; }
   @media (prefers-color-scheme: dark) { .banner { background: #451a03; color: #fde68a; border-color: #b45309; } }
@@ -244,6 +248,7 @@
       <button class="primary" id="reviewGoals">Review and save</button>
     </div>
     <div class="muted setup-note">Starts at the default goals. You can change them later in Settings.</div>
+    <div class="muted setup-note" id="setupNotStarted" hidden>Scoring hasn’t started yet. Set your goals now and you’ll be ready to earn from day one.</div>
     <div class="status" id="setupStatus"></div>
   </div>
   <div class="card" id="weekCard" hidden>
@@ -348,13 +353,13 @@
         <input type="text" id="ledgerSearch" placeholder="Search History" maxlength="100" aria-label="Search">
       </div>
       <div class="status" id="ledgerStatus"></div>
-      <div class="table-wrap">
+      <div class="table-wrap ledger-scroll" id="ledgerScroll">
         <table class="ledger">
           <thead><tr><th>When</th><th>Who</th><th>What</th><th class="num">Points</th><th class="num">Balance</th></tr></thead>
           <tbody id="ledgerBody"></tbody>
         </table>
+        <div class="ledger-end" id="ledgerEnd" hidden></div>
       </div>
-      <div style="margin-top:10px"><button id="ledgerMore" hidden>Show More</button></div>
       <div style="margin-top:10px"><a class="link" id="adjustLink">Fix a mistake (adjustment)</a></div>
     </div>
 
@@ -1155,7 +1160,13 @@ async function loadMe() {
     $('goalMinutes').value = me.min_minutes;
     $('goalCalories').value = me.min_calories;
     $('goalWeekly').value = me.weekly_workouts;
-    $('pausedBanner').hidden = !!me.scoring_enabled;
+    meGoalsSet = !!me.goals_set;
+    meScoringOn = !!me.scoring_enabled;
+    // Goals come first: until they are set, the setup card says everything
+    // (including that scoring hasn't started), so the paused banner waits.
+    $('pausedBanner').hidden = meScoringOn || !meGoalsSet;
+    $('setupNotStarted').hidden = meScoringOn;
+    if (ledgerLoaded) renderLedger();  // its empty message depends on these
     if (!me.goals_set) {
       $('setupMinutes').value = me.min_minutes;
       $('setupCalories').value = me.min_calories;
@@ -1488,10 +1499,21 @@ function whatText(e) {
   return e.what || e.category;
 }
 
-const LEDGER_PAGE = 15;
+const LEDGER_PAGE = 30;
 let ledgerRows = [];
 let ledgerHasMore = false;
+let ledgerLoadingMore = false;
+let ledgerLoaded = false;
 let ledgerTimer = null;
+let meGoalsSet = true;   // filled in by loadMe
+let meScoringOn = true;
+
+// What to say when the history is empty, unfiltered.
+function emptyLedgerText() {
+  if (!meGoalsSet) return 'No points yet. Set your goals above to start earning.';
+  if (!meScoringOn) return 'No points yet. They’ll show up here once scoring starts.';
+  return 'No points yet. They show up the day after you hit a goal.';
+}
 
 function ledgerParams(before) {
   // Ask for one extra row: if it comes back, there is another page.
@@ -1520,8 +1542,11 @@ function renderLedger() {
     body.appendChild(tr);
   });
   const filtered = $('ledgerPlayer').value || $('ledgerType').value || $('ledgerMonth').value || $('ledgerSearch').value.trim();
-  say('ledgerStatus', ledgerRows.length ? '' : (filtered ? 'No entries match.' : 'No entries yet.'));
-  $('ledgerMore').hidden = !ledgerHasMore;
+  say('ledgerStatus', ledgerRows.length ? '' : (filtered ? 'No entries match.' : emptyLedgerText()));
+  $('ledgerScroll').hidden = !ledgerRows.length;  // no empty table with just headers
+  const end = $('ledgerEnd');
+  end.hidden = !ledgerRows.length;
+  end.textContent = ledgerHasMore ? 'Scroll for older entries' : 'That’s everything';
 }
 
 async function loadLedger() {
@@ -1530,6 +1555,8 @@ async function loadLedger() {
     if (!rows) return;
     ledgerHasMore = rows.length > LEDGER_PAGE;
     ledgerRows = rows.slice(0, LEDGER_PAGE);
+    ledgerLoaded = true;
+    $('ledgerScroll').scrollTop = 0;  // new filter: start from the newest again
     renderLedger();
     loadLedgerMonths();
   } catch (e) {
@@ -1537,10 +1564,12 @@ async function loadLedger() {
   }
 }
 
-async function showMoreLedger() {
+// Called while scrolling the history box: fetch the next page once near the bottom.
+async function loadMoreLedger() {
   const last = ledgerRows[ledgerRows.length - 1];
-  if (!last) return;
-  $('ledgerMore').disabled = true;
+  if (!last || !ledgerHasMore || ledgerLoadingMore) return;
+  ledgerLoadingMore = true;
+  $('ledgerEnd').textContent = 'Loading…';
   try {
     const rows = await apiGet('/api/ledger?' + ledgerParams(last.id));
     if (!rows) return;
@@ -1548,10 +1577,15 @@ async function showMoreLedger() {
     ledgerRows = ledgerRows.concat(rows.slice(0, LEDGER_PAGE));
     renderLedger();
   } catch (e) {
-    say('ledgerStatus', 'Could not load more. Try again in a moment.', true);
+    $('ledgerEnd').textContent = 'Could not load more. Scroll again to retry.';
   } finally {
-    $('ledgerMore').disabled = false;
+    ledgerLoadingMore = false;
   }
+}
+
+function onLedgerScroll() {
+  const box = $('ledgerScroll');
+  if (box.scrollTop + box.clientHeight >= box.scrollHeight - 120) loadMoreLedger();
 }
 
 async function loadLedgerMonths() {
@@ -1829,7 +1863,7 @@ $('ledgerSearch').addEventListener('input', () => {
   clearTimeout(ledgerTimer);
   ledgerTimer = setTimeout(loadLedger, 300);  // wait for a pause in typing
 });
-$('ledgerMore').addEventListener('click', showMoreLedger);
+$('ledgerScroll').addEventListener('scroll', onLedgerScroll, { passive: true });
 $('adjustLink').addEventListener('click', openAdjustDialog);
 $('colorPicker').addEventListener('input', () => {
   $('colorHex').value = $('colorPicker').value;
