@@ -56,7 +56,7 @@ def _earned_month():
     return case(
         (or_(p.like("day-%"), p.like("wk-%")), func.substr(p, func.strpos(p, "-") + 1, 7)),
         (p.op("~")(r"^\d{4}-\d{2}$"), p),
-        else_=func.to_char(func.timezone("UTC", LedgerEntry.created_at), "YYYY-MM"),
+        else_=func.to_char(func.timezone(config.GROUP_TIMEZONE, LedgerEntry.created_at), "YYYY-MM"),
     )
 
 
@@ -150,7 +150,7 @@ def points_history(db: Session = Depends(get_session)):
              left out, same as the "Earned by" totals, so those lines only go up.
     balance: the shared balance at the end of each day that had any activity,
              so it moves down when rewards are redeemed."""
-    day = func.date(LedgerEntry.created_at)
+    day = func.date(func.timezone(config.GROUP_TIMEZONE, LedgerEntry.created_at))
     earned = db.execute(
         select(User.name, day.label("d"), func.sum(LedgerEntry.points).label("pts"))
         .join(User, User.id == LedgerEntry.user_id)

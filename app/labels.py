@@ -6,6 +6,8 @@ short note, and this turns them into a sentence."""
 
 import datetime as dt
 
+from app import config
+
 # What each kind of earned row is called.
 CATEGORY_LABELS = {
     "calorie_daily": "Daily Calorie Goal Reached",
@@ -39,7 +41,7 @@ def period_text(period: str | None, today: dt.date | None = None) -> str:
     'October 2026'. The year is added to days and weeks that are not in the current year."""
     if not period:
         return ""
-    today = today or dt.date.today()
+    today = today or config.today()
     try:
         if period.startswith("day-"):
             return _short_date(dt.date.fromisoformat(period[4:]), today)

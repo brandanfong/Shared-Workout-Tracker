@@ -6,6 +6,7 @@ Other modules read these as `config.NAME` / `config.today()` (not
 import datetime as dt
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Tolerate stray quotes/whitespace and a plain postgresql:// prefix
 DATABASE_URL = os.environ["DATABASE_URL"].strip().strip("'\"")
@@ -26,5 +27,10 @@ SCORING_START = dt.date.fromisoformat(os.getenv("SCORING_START_DATE", "2026-11-0
 SCORING_ENABLED = os.getenv("SCORING_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
+# The group's calendar. "Today", the scoring days and the history chart's days all
+# follow this one zone, not the server's clock (UTC on Render). Per-user zones later.
+GROUP_TIMEZONE = os.getenv("GROUP_TIMEZONE", "America/Los_Angeles")
+
+
 def today() -> dt.date:
-    return dt.date.today()
+    return dt.datetime.now(ZoneInfo(GROUP_TIMEZONE)).date()
