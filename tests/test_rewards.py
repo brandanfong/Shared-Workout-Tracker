@@ -1,4 +1,5 @@
 import pytest
+from app import config
 from sqlalchemy.orm import Session
 
 from app.db import engine
@@ -288,7 +289,7 @@ def test_history_months_requires_a_key(client):
 
 def test_search_finds_what_the_table_shows(client, auth, headers, earn, reward):
     import datetime as dt
-    y = dt.date.today().year
+    y = config.today().year
     earn(5, "brandan", period=f"day-{y}-11-04", category="calorie_daily")
     earn(6, "partner", period=f"wk-{y}-11-02", category="workout_goal")
     earn(7, "partner", period=f"{y}-10", category="calorie_monthly")
@@ -319,7 +320,7 @@ def test_search_finds_what_the_table_shows(client, auth, headers, earn, reward):
 
 def test_history_rows_carry_their_sentence(client, auth, earn):
     import datetime as dt
-    y = dt.date.today().year
+    y = config.today().year
     earn(5, "brandan", period=f"day-{y}-11-04", category="calorie_daily")
     earn(6, "brandan", period=f"day-{y - 1}-11-04", category="calorie_daily")
     rows = {e["points"]: e["what"] for e in client.get("/api/ledger", headers=auth).json()}

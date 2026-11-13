@@ -1,4 +1,5 @@
 import datetime as dt
+from app import config
 
 
 def test_health_needs_no_key(client):
@@ -75,7 +76,7 @@ def test_calendar_rejects_bad_month(client, auth):
 
 
 def test_activity_respects_days_window(client, auth, log):
-    today = dt.date.today()
+    today = config.today()
     log(date=today.isoformat())
     log(date=(today - dt.timedelta(days=60)).isoformat())
     data = client.get("/api/activity?days=7", headers=auth).json()

@@ -1,4 +1,5 @@
 import datetime as dt
+from app import config
 
 import pytest
 from conftest import backdate_goals
@@ -27,7 +28,7 @@ def test_update_goals(client, auth):
     )
     assert r.status_code == 200
     assert r.json() == {"name": "brandan", "min_minutes": 45, "min_calories": 500,
-                        "weekly_workouts": 2, "effective_from": dt.date.today().isoformat()}
+                        "weekly_workouts": 2, "effective_from": config.today().isoformat()}
     me = client.get("/api/me", headers=auth).json()
     assert (me["min_minutes"], me["min_calories"]) == (45, 500)
 
