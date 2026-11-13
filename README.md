@@ -212,6 +212,7 @@ All endpoints need an `X-API-Key` header except `/`, `/health`, and the page its
 | `GET /api/calendar?month=YYYY-MM` | Month view data, goals and colors |
 | `GET /api/activity?days=30` | Chart data |
 | `GET /api/me`, `PATCH /api/me/settings`, `PATCH /api/me/color` | Your goals and color |
+| `GET /api/week` | This week so far: your own progress and pace, and the team streak (nothing about teammates; preview, nothing is paid) |
 | `GET /api/balance`, `GET /api/ledger` | Shared balance and the points history |
 | `GET/POST /api/rewards`, `PATCH /api/rewards/{id}`, `POST /api/rewards/{id}/redeem` | The rewards menu |
 | `POST /api/adjust` | Correct a mistake with a new ledger entry |

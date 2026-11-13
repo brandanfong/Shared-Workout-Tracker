@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse
 
 from app import config
 from app.setup_db import setup_database
-from app.routers import activity, keys, me, points, rewards
+from app.routers import activity, keys, me, points, rewards, week
 
 app = FastAPI(title="Shared Workout Tracker")
 setup_database()
@@ -14,6 +14,7 @@ app.include_router(me.router)
 app.include_router(keys.router)
 app.include_router(rewards.router)
 app.include_router(points.router)
+app.include_router(week.router)
 
 
 @app.get("/")

@@ -165,6 +165,21 @@
   dialog label.row { flex-direction: row; align-items: center; gap: 8px; }
   dialog input[type=text], dialog input[type=number] { width: 100%; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* This week panel */
+  .week-goals { display: grid; gap: 14px; }
+  @media (min-width: 700px) { .week-goals { grid-template-columns: 1fr 1fr; gap: 14px 28px; } }
+  .wg-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 0.9rem; }
+  .wg-head strong { font-variant-numeric: tabular-nums; }
+  .bar { height: 12px; border-radius: 999px; background: var(--border); overflow: hidden; margin: 6px 0 5px; }
+  .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.4s; }
+  .bar.done > span { background: #16a34a; }
+  .bar.out > span { background: var(--muted); }
+  .wg-msg { font-size: 0.85rem; }
+  .wg-msg.done { color: #16a34a; font-weight: 600; }
+  .wg-msg.out { color: var(--muted); }
+  @media (prefers-color-scheme: dark) { .wg-msg.done { color: #4ade80; } }
+  .week-team { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -206,6 +221,15 @@
     </div>
     <div class="muted setup-note">Starts at the default goals. You can change them later in Settings.</div>
     <div class="status" id="setupStatus"></div>
+  </div>
+  <div class="card" id="weekCard" hidden>
+    <div class="card-head">
+      <h2>This Week</h2>
+      <span class="muted" id="weekRange"></span>
+    </div>
+    <div class="muted" id="weekGrace" hidden style="margin-bottom:10px">Grace week: you join the team check on Monday.</div>
+    <div class="week-goals" id="weekGoals"></div>
+    <div class="week-team" id="weekTeam"></div>
   </div>
   <div class="dash">
   <div class="card">
@@ -1078,7 +1102,7 @@ async function saveFirstGoals(m, c, w) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     say('setupStatus', '');
     await loadMe();
-    await loadCalendar();
+    await Promise.all([loadCalendar(), loadWeek()]);
     renderCharts();
   } catch (e) {
     say('setupStatus', 'Could not save. Try again in a moment.', true);
@@ -1127,10 +1151,93 @@ async function saveGoals() {
     if (res.status === 401) { clearKey(); showAuth('That key was not accepted. Try again.'); return; }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     await loadMe();
-    await loadCalendar();
+    await Promise.all([loadCalendar(), loadWeek()]);
     renderCharts();
   } catch (e) {
     say('goalStatus', 'Could not save. Try again in a moment.', true);
+  }
+}
+
+/* ---------- This week ---------- */
+
+const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+// No "behind" color: a tight week just shows how many are left.
+const BAR_CLASS = { done: 'done', out_of_reach: 'out' };
+const MSG_CLASS = { done: 'done', out_of_reach: 'out' };
+
+// The short line under a bar.
+function paceMsg(g) {
+  const need = g.target - g.done;
+  switch (g.status) {
+    case 'out_of_reach': return 'Out of reach this week · daily points still count';
+    case 'almost': return 'Almost there, 1 more';
+    case 'on_pace': return 'On pace, ' + need + ' more to go';
+    default: return need + ' more to go';  // behind, or no days to spare; the header already says days left
+  }
+}
+
+function weekGoal(title, g, doneMsg) {
+  const box = el('div');
+  const head = el('div', 'wg-head');
+  head.appendChild(el('span', null, title));
+  head.appendChild(el('strong', null, g.done + ' / ' + g.target));
+  box.appendChild(head);
+  const bar = el('div', 'bar ' + (BAR_CLASS[g.status] || ''));
+  const fill = el('span');
+  fill.style.width = Math.min(100, Math.round(g.done * 100 / g.target)) + '%';
+  bar.appendChild(fill);
+  bar.setAttribute('role', 'progressbar');
+  bar.setAttribute('aria-label', title);
+  bar.setAttribute('aria-valuemin', 0);
+  bar.setAttribute('aria-valuemax', g.target);
+  bar.setAttribute('aria-valuenow', Math.min(g.done, g.target));
+  box.appendChild(bar);
+  box.appendChild(el('div', 'wg-msg ' + (MSG_CLASS[g.status] || ''), g.status === 'done' ? doneMsg : paceMsg(g)));
+  return box;
+}
+
+// Weekly bonuses are paid after the week ends, so no point amounts here.
+function workoutDoneMsg(g, scoring) {
+  if (g.done > g.target && scoring) return 'Goal reached! Extra workouts still earn +2 each';
+  return 'Goal reached!';
+}
+
+function calorieDoneMsg(c) {
+  // 5 days meets the goal; 6 and 7 earn a weekly bonus on top.
+  if (c.done >= 7) return 'Perfect week!';
+  if (c.done >= 6) return 'Bonus earned!';
+  return 'Calorie goal reached';
+}
+
+function renderWeek(w) {
+  const mine = w.me;
+  $('weekCard').hidden = !mine;
+  if (!mine) return;
+  const scoring = w.streak !== null;
+  $('weekRange').textContent = w.days_left === 1 ? 'Last day' : w.days_left + ' days left';
+  $('weekGrace').hidden = !mine.grace;
+
+  $('weekGoals').replaceChildren(
+    weekGoal('Workouts Completed', mine.workouts, workoutDoneMsg(mine.workouts, scoring)),
+    weekGoal('Calorie Goals Reached', mine.calories, calorieDoneMsg(mine.calories)),
+  );
+
+  // Group-level only: other people's days are already on the calendar.
+  const s = w.streak;
+  const team = $('weekTeam');
+  team.hidden = !(s && s.weeks > 0);
+  if (!team.hidden) {
+    team.textContent = 'Team streak: ' + plural(s.weeks, 'week') +
+      (s.multiplier !== '1.0' ? ' (×' + s.multiplier + ')' : '');
+  }
+}
+
+async function loadWeek() {
+  try {
+    const w = await apiGet('/api/week');
+    if (w) renderWeek(w);
+  } catch (e) {
+    $('weekCard').hidden = true;
   }
 }
 
@@ -1717,7 +1824,7 @@ async function init() {
   if (await loadCalendar()) {
     fillPlayerFilter();
     await loadMe();
-    await Promise.all([loadStore(), loadLedger(), loadColors()]);
+    await Promise.all([loadWeek(), loadStore(), loadLedger(), loadColors()]);
     await loadCharts();
   }
 }

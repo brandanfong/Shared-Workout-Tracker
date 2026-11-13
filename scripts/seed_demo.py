@@ -148,7 +148,7 @@ with Session(engine) as db:
             )
         )
         day = start
-        while day < today:  # up to yesterday; today is still in progress
+        while day <= today:  # through today, as if everyone synced this morning
             if day.weekday() == 0 or day == start:
                 workout_days = set(rng.sample(range(7), per_week + rng.choice([-1, 0, 0, 1])))
             if rng.random() < 0.06:  # the odd missed sync / day off the grid
