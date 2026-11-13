@@ -20,6 +20,12 @@ class User(Base):
     # The automatic color, given once when the person is created and never
     # changed, so adding someone later can't shuffle everyone else's color.
     auto_color: Mapped[str | None] = mapped_column(String, nullable=True)
+    # What the points popup has already shown this person (see app/popup.py):
+    # the newest ledger id, the newest week of their own, and the newest team
+    # week result. None means nothing yet.
+    seen_ledger_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    seen_my_week: Mapped[str | None] = mapped_column(String, nullable=True)
+    seen_team_week: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ApiKey(Base):

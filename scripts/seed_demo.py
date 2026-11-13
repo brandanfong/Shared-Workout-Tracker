@@ -78,10 +78,10 @@ def spread_dates(db) -> None:
     now = dt.datetime.now(utc)
 
     def landed(period: str) -> dt.datetime:
-        if period.startswith("day-"):  # paid two days after the day
-            d = dt.date.fromisoformat(period[4:]) + dt.timedelta(days=2)
-        elif period.startswith("wk-"):  # scored the Tuesday after the week
-            d = dt.date.fromisoformat(period[3:]) + dt.timedelta(days=8)
+        if period.startswith("day-"):  # paid once the next day has synced
+            d = dt.date.fromisoformat(period[4:]) + dt.timedelta(days=1)
+        elif period.startswith("wk-"):  # scored on the Monday sync after the week
+            d = dt.date.fromisoformat(period[3:]) + dt.timedelta(days=7)
         else:  # "YYYY-MM": the monthly bonus, paid just after the month closes
             y, m = map(int, period.split("-"))
             d = dt.date(y + (m == 12), m % 12 + 1, 3)
@@ -168,7 +168,20 @@ with Session(engine) as db:
             day += dt.timedelta(days=1)
     db.commit()
 
-    scored = run_scoring(db, today)
+    # Points popup demo: score up to last Sunday, mark that as "seen" by everyone,
+    # then score the rest. So each demo person's first visit shows a realistic popup
+    # (last week's result plus this week's days) instead of eight weeks at once.
+    last_sunday = today - dt.timedelta(days=today.weekday() + 1)
+    scored = run_scoring(db, last_sunday)
+    db.execute(text(
+        "UPDATE users SET "
+        "seen_ledger_id = (SELECT max(id) FROM ledger), "
+        "seen_my_week = (SELECT max(split_part(period, ':', 1)) FROM scoring_periods "
+        "  WHERE kind = 'week_user' AND split_part(period, ':', 2) = 'u' || users.id), "
+        "seen_team_week = (SELECT max(period) FROM scoring_periods WHERE kind = 'week')"
+    ))
+    db.commit()
+    scored += run_scoring(db, today)
     spread_dates(db)
     balance = current_balance(db)
 

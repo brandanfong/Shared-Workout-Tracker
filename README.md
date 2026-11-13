@@ -20,6 +20,9 @@ goals, and keeps one shared points balance that you can redeem for rewards.
   cooldown, and can be one-time or repeatable. Everything that changes the balance is a
   row in an append-only ledger, so the history is always auditable. Mistakes are fixed
   with an adjustment entry, never by editing a row.
+- **Points popup**: when you open the site (or come back to the tab) and points of yours landed
+  since you last looked, a popup sums them up: daily points, your week, the team result and
+  streak, the monthly bonus. Built in [app/popup.py](app/popup.py).
 - **Colors**: everyone picks their own color (swatches or any color, with checks so
   colors stay readable and easy to tell apart).
 
@@ -38,11 +41,14 @@ a reward. Missing data counts as zero, never as a penalty.
 | Streak multiplier on the week's points | when the week closes | 2-3 weeks x1.1, 4-7 x1.25, 8+ x1.5 |
 | Calorie consistency over a calendar month | when the month closes | 80% of days +5, 90% +10, 100% +20 |
 
-A day is paid two days after it, because the phone sends today **and yesterday** on every
-sync: Monday's numbers can still change during Tuesday, so Monday is paid on Wednesday. If
-a late sync raises a day after it was paid, the difference is added when the week closes.
+Points are paid when the data is final, not after a fixed delay. The phone sends today **and
+yesterday** on every sync, so a day is final once that person has synced on a later day. A day is
+paid as soon as that happens. If a late sync raises a day after it was paid, the difference is
+added when the week closes.
 
-A week is Monday to Sunday and is scored the Tuesday after it ends. A "successful week"
+Your own weekly and monthly bonuses are paid once you have a row dated after the week or month
+(the Monday sync). The group parts (team bonus, streak, multiplier) wait until everyone playing
+has one, or 7 days after the week ends if someone never syncs. A week is Monday to Sunday. A "successful week"
 needs 5+ calorie-goal days and your own weekly workout target; the pair succeeds only if
 everyone does. A blocked week resets the streak but everyone keeps their direct points.
 
@@ -196,6 +202,7 @@ The tests build their database through the migrations, so a broken migration fai
 | [app/scoring.py](app/scoring.py) | The scoring rules (pure functions, no database) |
 | [app/colors.py](app/colors.py) | Preset colors and the rules a chosen color must follow |
 | [app/users.py](app/users.py) | Working out each person's display color |
+| [app/popup.py](app/popup.py) | The points popup: what's new for you and how it is worded |
 | [app/labels.py](app/labels.py) | The plain-English text for points history rows |
 | [static/index.html](static/index.html) | The whole front end (one page, no build step) |
 | [scripts/create_key.py](scripts/create_key.py) | Make an API key for a person |
@@ -213,6 +220,7 @@ All endpoints need an `X-API-Key` header except `/`, `/health`, and the page its
 | `GET /api/activity?days=30` | Chart data |
 | `GET /api/me`, `PATCH /api/me/settings`, `PATCH /api/me/color` | Your goals and color |
 | `GET /api/week` | This week so far: your own progress and pace, and the team streak (nothing about teammates; preview, nothing is paid) |
+| `GET /api/popup`, `POST /api/popup/seen` | The points popup: your own points (and team results) since you last closed it, and marking them seen |
 | `GET /api/balance`, `GET /api/ledger` | Shared balance and the points history |
 | `GET/POST /api/rewards`, `PATCH /api/rewards/{id}`, `POST /api/rewards/{id}/redeem` | The rewards menu |
 | `POST /api/adjust` | Correct a mistake with a new ledger entry |

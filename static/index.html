@@ -180,6 +180,30 @@
   .wg-msg.out { color: var(--muted); }
   @media (prefers-color-scheme: dark) { .wg-msg.done { color: #4ade80; } }
   .week-team { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--muted); }
+
+  /* Points popup ("welcome back") */
+  :root { --pp-green: #16a34a; --pp-gold: #b45309; --pp-gold-line: rgba(217,119,6,.45); --pp-gold-bg: rgba(251,191,36,.14); }
+  @media (prefers-color-scheme: dark) { :root { --pp-green: #4ade80; --pp-gold: #fbbf24; --pp-gold-line: rgba(251,191,36,.45); --pp-gold-bg: rgba(251,191,36,.12); } }
+  .pp-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .pp-backdrop[hidden] { display: none; }
+  .pp { background: var(--bg); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 400px; max-height: calc(100vh - 32px); overflow-y: auto; padding: 24px 20px 20px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  .pp-title { color: var(--muted); font-size: 0.9rem; }
+  .pp-total { font-size: 3rem; font-weight: 800; color: var(--pp-green); line-height: 1.1; margin: 4px 0 2px; }
+  .pp-total small { font-size: 1rem; font-weight: 600; color: var(--muted); }
+  .pp-hl { background: var(--pp-gold-bg); border: 1px solid var(--pp-gold-line); border-radius: 12px; padding: 12px; margin-top: 10px; text-align: left; font-size: 0.92rem; }
+  .pp-hl b { color: var(--pp-gold); }
+  .pp-hl.perfect { background: linear-gradient(135deg, rgba(251,191,36,.26), rgba(74,222,128,.18)); border-color: var(--pp-gold); }
+  .pp-hl.plain { background: var(--card); border-color: var(--border); }
+  .pp-hl.plain b { color: var(--fg); }
+  .pp-hl .d { display: block; margin-top: 3px; }
+  .pp-hl .hint { display: block; margin-top: 4px; color: var(--muted); font-size: 0.82rem; }
+  .pp-rows { text-align: left; margin: 16px 0 0; border-top: 1px solid var(--border); }
+  .pp-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+  .pp-row .pts { font-weight: 700; color: var(--pp-green); white-space: nowrap; }
+  .pp-row .sub { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+  .pp-row.pending .pts { color: var(--muted); font-weight: 500; }
+  .pp-balance { color: var(--muted); font-size: 0.85rem; margin-top: 12px; }
+  .pp-ok { margin-top: 14px; width: 100%; padding: 12px; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -440,6 +464,18 @@
     </form>
   </dialog>
 </main>
+
+<!-- Points popup: shown on load / tab refocus when your own points landed since you last closed it -->
+<div class="pp-backdrop" id="ppBackdrop" hidden>
+  <div class="pp" role="dialog" aria-modal="true" aria-labelledby="ppTitle">
+    <div class="pp-title" id="ppTitle"></div>
+    <div class="pp-total" id="ppTotal"></div>
+    <div id="ppHighlights"></div>
+    <div class="pp-rows" id="ppRows"></div>
+    <div class="pp-balance" id="ppBalance"></div>
+    <button class="primary pp-ok" id="ppOk">Got it</button>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
@@ -1818,6 +1854,60 @@ $('viewTable').addEventListener('click', () => setLedgerView('table'));
 $('viewGraph').addEventListener('click', () => setLedgerView('graph'));
 $('pointsRange').addEventListener('change', renderPointsCharts);
 
+/* ---------- Points popup ---------- */
+
+// The server decides everything (title, highlights, rows); this only draws it.
+// Closing sends back `ack` so the same points are never shown twice.
+let popupAck = null;
+let popupChecking = false;
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function checkPopup() {
+  if (popupChecking || popupAck || !getKey()) return;  // already open or checking
+  popupChecking = true;
+  try {
+    const data = await apiGet('/api/popup');
+    if (data && data.popup) showPopup(data.popup, data.ack);
+  } catch (e) {
+    // The popup is a nice-to-have; never break the page over it.
+  } finally {
+    popupChecking = false;
+  }
+}
+
+function showPopup(p, ack) {
+  popupAck = ack;
+  $('ppTitle').textContent = p.title;
+  $('ppTotal').innerHTML = '+' + p.total + ' <small>points</small>';
+  $('ppHighlights').innerHTML = p.highlights.map((h) =>
+    '<div class="pp-hl ' + (h.tone === 'gold' ? '' : esc(h.tone)) + '"><b>' + esc(h.title) + '</b>' +
+    (h.detail ? '<span class="d">' + esc(h.detail) + '</span>' : '') +
+    (h.hint ? '<span class="hint">' + esc(h.hint) + '</span>' : '') + '</div>').join('');
+  $('ppRows').innerHTML = p.rows.map((r) =>
+    '<div class="pp-row' + (r.points === null ? ' pending' : '') + '"><span>' + esc(r.name) +
+    (r.sub ? '<span class="sub">' + esc(r.sub) + '</span>' : '') + '</span><span class="pts">' +
+    (r.points === null ? 'pending' : '+' + r.points) + '</span></div>').join('');
+  $('ppBalance').textContent = 'Shared balance: ' + p.balance + ' pts';
+  $('ppBackdrop').hidden = false;
+  $('ppOk').focus();
+}
+
+async function closePopup() {
+  if (!popupAck) return;
+  const ack = popupAck;
+  $('ppBackdrop').hidden = true;
+  await apiSend('POST', '/api/popup/seen', ack);
+  popupAck = null;
+}
+
+$('ppOk').addEventListener('click', closePopup);
+$('ppBackdrop').addEventListener('click', (ev) => { if (ev.target === $('ppBackdrop')) closePopup(); });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && popupAck) closePopup(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkPopup(); });
+
 async function init() {
   initChartControls();
   showTab(location.hash.slice(1), false);
@@ -1826,6 +1916,7 @@ async function init() {
     await loadMe();
     await Promise.all([loadWeek(), loadStore(), loadLedger(), loadColors()]);
     await loadCharts();
+    checkPopup();
   }
 }
 init();

@@ -36,7 +36,15 @@ A complete workout is a day you hit both your minutes and your calories. Minutes
 
 ### When Points Arrive
 
-Daily points land two days after the day itself. Each sync sends today's and yesterday's totals, so if you fell asleep before logging, yesterday still gets picked up. The two-day wait gives a day time to settle before it's paid.
+Points are paid once your data for a day is final, not after a fixed delay. Each sync sends today's and yesterday's totals, so a day is final once you have synced on a later day: that sync re-sent the day in full, so it can't change any more. If you fell asleep before logging, yesterday still gets picked up.
+
+- **Daily points** arrive once you have synced the next day or later.
+- **Your own weekly bonuses** (6/7 calorie days, your workout target) arrive once **you** have synced on the Monday after the week or later. Nobody else's sync holds them up.
+- **The monthly bonus** is personal too: it arrives once you have synced after the month ends.
+- **The team bonus, the streak and the multiplier** are group results, so they arrive once **everyone** playing has synced on the Monday after the week (or later). One person's late sync only holds up these.
+- **If someone never syncs,** their week or month is scored anyway 7 days after it ends, and any days with no data count as zero.
+
+When new points of yours arrive, a popup shows them the next time you open the site or come back to it.
 
 ## Group Goals
 
